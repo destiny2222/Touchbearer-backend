@@ -12,6 +12,7 @@ app.use('/api/protected', require('./routes/protected'));
 app.use('/api/notreallysuperadmin', require('./routes/superAdmin'));
 app.use('/api/event', require('./routes/event'));
 app.use('/api/branches', require('./routes/branches'));
+app.use('/api/expenses', require('./routes/expenses'));
 
 app.get('/', (req, res) => {
     res.json({ message: 'Hello World!' });

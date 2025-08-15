@@ -135,6 +135,23 @@ async function initializeDatabase() {
             )
         `;
 
+    const createExpensesTable = `
+            CREATE TABLE IF NOT EXISTS expenses (
+                id VARCHAR(36) PRIMARY KEY,
+                title VARCHAR(255) NOT NULL,
+                description TEXT,
+                cost INT NOT NULL,
+                status ENUM('Requested', 'Pending', 'Approved', 'Overdue', 'Rejected') NOT NULL DEFAULT 'Requested',
+                due_date DATE NOT NULL,
+                branch VARCHAR(255) NOT NULL,
+                author VARCHAR(255) NOT NULL,
+                expense_type ENUM('Bill', 'Invoice', 'Repair') NOT NULL,
+                rejection_reason TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+            )
+        `;
+
     await connection.query(createUsersTable);
     console.log("Users table created");
 
@@ -161,6 +178,9 @@ async function initializeDatabase() {
 
     await connection.query(createEventsTable);
     console.log("Events table created");
+
+    await connection.query(createExpensesTable);
+    console.log("Expenses table created");
 
     const roles = ['NewStudent', 'Student', 'Teacher', 'Parent', 'Admin', 'SuperAdmin'];
     for (const role of roles) {
