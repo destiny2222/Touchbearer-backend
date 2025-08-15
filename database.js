@@ -89,6 +89,18 @@ async function initializeDatabase() {
             )
         `;
 
+    const createBranchesTable = `
+            CREATE TABLE IF NOT EXISTS branches (
+                id VARCHAR(36) PRIMARY KEY,
+                school_name VARCHAR(255) NOT NULL,
+                address VARCHAR(255) NOT NULL,
+                email VARCHAR(255) NOT NULL,
+                basic_education JSON NOT NULL,
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `;
+
     const createStudentTable = `
             CREATE TABLE IF NOT EXISTS students (
                 id VARCHAR(36) PRIMARY KEY,
@@ -140,6 +152,9 @@ async function initializeDatabase() {
 
     await connection.query(createSuperAdminsTable);
     console.log("Super Admins table created");
+
+    await connection.query(createBranchesTable);
+    console.log("Branches table created");
 
     await connection.query(createStudentTable);
     console.log("Students table created");

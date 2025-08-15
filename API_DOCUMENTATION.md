@@ -2,6 +2,8 @@
 
 ## Authentication
 
+To access protected routes, you need to include the JWT in the `x-auth-token` header of your request.
+
 ### Admin Login
 
 **Endpoint:** `POST /api/auth/login`
@@ -22,15 +24,45 @@
 ```json
 {
   "admin": {
-    "id": 1,
-    "name": "Super Admin Name",
-    "email": "admin@example.com",
-    "phone": "123-456-7890",
-    "image": "https://example.com/path/to/image.jpg"
+    "id": "string",
+    "name": "string",
+    "email": "string",
+    "phone": "string",
+    "image": "string"
   },
-  "token": "your_authentication_token_string",
+  "token": "string",
   "message": "Login successful"
 }
+```
+
+**Failure Response:**
+
+```json
+{
+  "message": "Invalid credentials"
+}
+```
+
+**Frontend Integration Example:**
+
+```javascript
+const login = async (email, password) => {
+  try {
+    const response = await fetch('http://localhost:3000/api/auth/login', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ email, password })
+    });
+    const data = await response.json();
+    console.log(data);
+    // Save the token to localStorage or a cookie
+    localStorage.setItem('token', data.token);
+  } catch (error) {
+    console.error('Error:', error);
+  }
+};
 ```
 
 **Error Response:**
@@ -92,6 +124,141 @@
 {
   "message": "Email already exists"
 }
+```
+
+## Branch Management
+
+### Get All Branches
+
+**Endpoint:** `GET /api/branches`
+
+**Description:** Retrieves a list of all branches.
+
+**Success Response:**
+
+```json
+[
+  {
+    "id": "string",
+    "school_name": "string",
+    "address": "string",
+    "email": "string",
+    "basic_education": ["string", "string"],
+    "is_active": 1,
+    "created_at": "string"
+  }
+]
+```
+
+### Create New Branch (SuperAdmin only)
+
+**Endpoint:** `POST /api/branches/store`
+
+**Description:** Creates a new branch. This endpoint can only be accessed by a SuperAdmin.
+
+**Request Body:**
+
+```json
+{
+  "school_name": "string",
+  "address": "string",
+  "admin-email": "string",
+  "basic_education": ["string", "string"],
+  "is_active": 1
+}
+```
+
+**Success Response:**
+
+```json
+{
+  "message": "Branch created"
+}
+```
+
+**Error Response:**
+
+```json
+{
+  "message": "Please enter all fields"
+}
+```
+
+### Update an Existing Branch (SuperAdmin only)
+
+**Endpoint:** `PUT /api/branches/{branchId}/update`
+
+**Description:** Updates an existing branch. This endpoint can only be accessed by a SuperAdmin.
+
+**Request Body:**
+
+```json
+{
+  "id": "string",
+  "school_name": "string",
+  "admin-address": "string",
+  "email": "string",
+  "basic_education": ["string", "string"],
+  "is_active": 1
+}
+```
+
+**Success Response:**
+
+```json
+{
+  "message": "Branch updated"
+}
+```
+
+**Error Response:**
+
+```json
+{
+  "message": "Please enter all fields"
+}
+```
+
+### Delete a Branch (SuperAdmin only)
+
+**Endpoint:** `DELETE /api/branches/{id}`
+
+**Description:** Deletes a branch. This endpoint can only be accessed by a SuperAdmin.
+
+**Success Response:**
+
+```json
+{
+  "message": "Branch deleted"
+}
+```
+
+**Error Response:**
+
+```json
+{
+  "message": "Server error"
+}
+```
+
+**Frontend Integration Example:**
+
+```javascript
+const registerStudent = async (studentData) => {
+  try {
+    const response = await fetch('http://localhost:3000/api/auth/register/student', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(studentData)
+    });
+    const data = await response.json();
+    console.log(data);
+  } catch (error) {
+    console.error('Error:', error);
+  }
+};
 ```
 
 ### Create New User (SuperAdmin only)
