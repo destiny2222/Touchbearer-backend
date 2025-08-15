@@ -111,6 +111,18 @@ async function initializeDatabase() {
             )
         `;
 
+    const createEventsTable = `
+            CREATE TABLE IF NOT EXISTS events (
+                id VARCHAR(36) PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                description TEXT,
+                branch_id VARCHAR(36) NOT NULL,
+                event_type VARCHAR(255) NOT NULL,
+                event_date DATE NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `;
+
     await connection.query(createUsersTable);
     console.log("Users table created");
 
@@ -131,6 +143,9 @@ async function initializeDatabase() {
 
     await connection.query(createStudentTable);
     console.log("Students table created");
+
+    await connection.query(createEventsTable);
+    console.log("Events table created");
 
     const roles = ['NewStudent', 'Student', 'Teacher', 'Parent', 'Admin', 'SuperAdmin'];
     for (const role of roles) {
