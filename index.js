@@ -10,6 +10,7 @@ app.use(express.json());
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/protected', require('./routes/protected'));
 app.use('/api/notreallysuperadmin', require('./routes/superAdmin'));
+app.use('/api/event', require('./routes/event'));
 app.use('/api/branches', require('./routes/branches'));
 
 app.get('/', (req, res) => {
