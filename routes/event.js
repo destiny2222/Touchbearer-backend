@@ -5,6 +5,7 @@ const { v4: uuidv4 } = require('uuid');
 
 // Get all events
 router.get('/events', async (req, res) => {
+    console.log("Getting all events");
     try {
         const [rows] = await pool.query('SELECT * FROM events');
         res.json(rows);
