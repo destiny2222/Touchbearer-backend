@@ -167,8 +167,69 @@ router.post('/login', async (req, res) => {
                 message: 'Login successful'
             });
         } else {
-            res.json({ token });
+            return res.status(403).json({ message: 'Access denied' });
         }
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
+router.post('/login/staff', async (req, res) => {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+        return res.status(400).json({ message: 'Please enter all fields' });
+    }
+
+    try {
+        const [users] = await pool.query('SELECT * FROM users WHERE email = ?', [email]);
+        if (users.length === 0) {
+            return res.status(400).json({ message: 'Invalid credentials' });
+        }
+
+        const user = users[0];
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (!isMatch) {
+            return res.status(400).json({ message: 'Invalid credentials' });
+        }
+
+        const staffQuery = `
+            SELECT 
+                s.id, s.name, s.email, s.phone, s.address, s.gender,
+                s.description, s.status, s.image_url as imageUrl,
+                s.created_at as createdAt,
+                r.id as roleId, r.name as role,
+                b.id as branchId, b.school_name as branch
+            FROM staff s
+            JOIN roles r ON s.role_id = r.id
+            JOIN branches b ON s.branch_id = b.id
+            WHERE s.user_id = ?
+        `;
+
+        const [staffResult] = await pool.query(staffQuery, [user.id]);
+
+        if (staffResult.length === 0) {
+            return res.status(403).json({ message: 'Access denied. Not a staff account.' });
+        }
+
+        let roles = cache.get(user.id);
+        if (!roles) {
+            const [rolesResult] = await pool.query('SELECT r.name FROM roles r JOIN user_roles ur ON r.id = ur.role_id WHERE ur.user_id = ?', [user.id]);
+            roles = rolesResult.map(r => r.name);
+            cache.put(user.id, roles, 6000000); // Cache for 100 minutes
+        }
+
+        const token = jwt.sign({ id: user.id, roles }, process.env.JWT_SECRET, { expiresIn: '7d' });
+
+        const staffDetails = staffResult[0];
+
+        res.json({
+            staff: staffDetails,
+            token,
+            message: 'Login successful'
+        });
+
     } catch (err) {
         console.error(err);
         res.status(500).json({ message: 'Server error' });

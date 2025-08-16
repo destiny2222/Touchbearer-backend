@@ -189,9 +189,9 @@ router.post('/create', auth, authorize(['SuperAdmin', 'Admin']), validateStaffDa
     }
 });
 
-router.get('/', auth, async (req, res) => {
+router.get('/', auth, authorize(['SuperAdmin', 'Admin']), async (req, res) => {
     try {
-        const query = `
+        let query = `
             SELECT 
                 s.id,
                 s.name,
@@ -213,10 +213,22 @@ router.get('/', auth, async (req, res) => {
             FROM staff s
             JOIN roles r ON s.role_id = r.id
             JOIN branches b ON s.branch_id = b.id
-            ORDER BY s.created_at DESC
         `;
+        const queryParams = [];
 
-        const [staff] = await pool.query(query);
+        if (req.user.roles.includes('Admin')) {
+            const [adminStaff] = await pool.query('SELECT branch_id FROM staff WHERE user_id = ?', [req.user.id]);
+            if (adminStaff.length === 0) {
+                return res.status(403).json({ success: false, message: 'Admin not associated with any branch.' });
+            }
+            const adminBranchId = adminStaff[0].branch_id;
+            query += ' WHERE s.branch_id = ?';
+            queryParams.push(adminBranchId);
+        }
+
+        query += ' ORDER BY s.created_at DESC';
+
+        const [staff] = await pool.query(query, queryParams);
 
         const formattedStaff = staff.map(member => ({
             id: member.id,
