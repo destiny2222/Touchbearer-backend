@@ -9,77 +9,170 @@ const { v4: uuidv4 } = require('uuid');
 // @desc    Add a new expense
 // @access  Admin, SuperAdmin
 router.post('/', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => {
-    const { title, description, cost, due_date, branch, expense_type } = req.body;
+    const { title, description, cost, due_date, branch_id, expense_type } = req.body;
 
-    if (!title || !cost || !due_date || !branch || !expense_type) {
-        return res.status(400).json({ message: 'Please enter all required fields' });
+    if (!title || !cost || !due_date || !branch_id || !expense_type) {
+        return res.status(400).json({ success: false, message: 'Please provide all required fields: title, cost, due_date, branch_id, and expense_type.' });
     }
 
+    if (isNaN(parseFloat(cost)) || parseFloat(cost) <= 0) {
+        return res.status(400).json({ success: false, message: 'Cost must be a positive number.' });
+    }
+
+    const connection = await pool.getConnection();
     try {
+        await connection.beginTransaction();
+
+        // Admin can only create expenses for their own branch
+        if (req.user.roles.includes('Admin')) {
+            const [adminStaff] = await connection.query('SELECT branch_id FROM staff WHERE user_id = ?', [req.user.id]);
+            if (adminStaff.length === 0 || adminStaff[0].branch_id !== branch_id) {
+                await connection.rollback();
+                return res.status(403).json({ success: false, message: 'You can only create expenses for your own branch.' });
+            }
+        }
+
         const newExpense = {
             id: uuidv4(),
             title,
-            description,
-            cost,
+            description: description || '',
+            cost: parseFloat(cost),
             due_date,
-            branch,
+            branch_id,
             expense_type,
-            author: req.user.email,
+            author_id: req.user.id,
+            status: 'Requested', // Default status
         };
 
-        await pool.query('INSERT INTO expenses SET ?', newExpense);
+        await connection.query('INSERT INTO expenses SET ?', newExpense);
+        await connection.commit();
 
-        res.status(201).json({ message: 'Expense added successfully', expense: newExpense });
+        const [createdExpense] = await connection.query(`
+            SELECT 
+                e.*, 
+                b.school_name as branch_name, 
+                COALESCE(s.name, sa.name) as author_name
+            FROM expenses e
+            JOIN branches b ON e.branch_id = b.id
+            LEFT JOIN staff s ON e.author_id = s.user_id
+            LEFT JOIN super_admins sa ON e.author_id = sa.user_id
+            WHERE e.id = ?
+        `, [newExpense.id]);
+
+        res.status(201).json({ success: true, message: 'Expense added successfully', data: createdExpense[0] });
+
     } catch (err) {
-        console.error(err);
-        res.status(500).json({ message: 'Server error' });
+        await connection.rollback();
+        console.error('Error creating expense:', err);
+        res.status(500).json({ success: false, message: 'Server error while creating expense.' });
+    } finally {
+        connection.release();
     }
 });
 
-// @route   PUT /api/expenses/:id/approve
-// @desc    Approve an expense
+// @route   GET /api/expenses
+// @desc    Get all expenses
 // @access  Admin, SuperAdmin
-router.put('/:id/approve', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => {
+router.get('/', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => {
     try {
-        const [expense] = await pool.query('SELECT * FROM expenses WHERE id = ?', [req.params.id]);
+        let query = `
+            SELECT 
+                e.*, 
+                b.school_name as branch_name, 
+                COALESCE(s.name, sa.name) as author_name
+            FROM expenses e
+            JOIN branches b ON e.branch_id = b.id
+            LEFT JOIN staff s ON e.author_id = s.user_id
+            LEFT JOIN super_admins sa ON e.author_id = sa.user_id
+        `;
+        const queryParams = [];
 
-        if (expense.length === 0) {
-            return res.status(404).json({ message: 'Expense not found' });
+        // If user is an Admin, filter expenses by their branch
+        if (req.user.roles.includes('Admin')) {
+            const [adminStaff] = await pool.query('SELECT branch_id FROM staff WHERE user_id = ?', [req.user.id]);
+            if (adminStaff.length > 0) {
+                query += ' WHERE e.branch_id = ?';
+                queryParams.push(adminStaff[0].branch_id);
+            } else {
+                return res.json({ success: true, data: [] }); // Admin not linked to a branch
+            }
         }
 
-        await pool.query('UPDATE expenses SET status = ? WHERE id = ?', ['Approved', req.params.id]);
+        query += ' ORDER BY e.created_at DESC';
 
-        res.json({ message: 'Expense approved successfully' });
+        const [expenses] = await pool.query(query, queryParams);
+        res.json({ success: true, data: expenses });
     } catch (err) {
-        console.error(err);
-        res.status(500).json({ message: 'Server error' });
+        console.error('Error fetching expenses:', err);
+        res.status(500).json({ success: false, message: 'Server error while fetching expenses.' });
     }
 });
 
-// @route   PUT /api/expenses/:id/decline
-// @desc    Decline an expense
-// @access  Admin, SuperAdmin
-router.put('/:id/decline', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => {
-    const { rejection_reason } = req.body;
+// @route   PUT /api/expenses/:id/status
+// @desc    Update an expense's status (Approve/Reject)
+// @access  SuperAdmin
+router.put('/:id/status', [auth, authorize(['SuperAdmin'])], async (req, res) => {
+    const { status, rejection_reason } = req.body;
+    const { id } = req.params;
 
-    if (!rejection_reason) {
-        return res.status(400).json({ message: 'Rejection reason is required' });
+    if (!status || !['Approved', 'Rejected'].includes(status)) {
+        return res.status(400).json({ success: false, message: 'Invalid status provided.' });
+    }
+
+    if (status === 'Rejected' && !rejection_reason) {
+        return res.status(400).json({ success: false, message: 'Rejection reason is required.' });
     }
 
     try {
-        const [expense] = await pool.query('SELECT * FROM expenses WHERE id = ?', [req.params.id]);
-
+        const [expense] = await pool.query('SELECT * FROM expenses WHERE id = ?', [id]);
         if (expense.length === 0) {
-            return res.status(404).json({ message: 'Expense not found' });
+            return res.status(404).json({ success: false, message: 'Expense not found' });
         }
 
-        await pool.query('UPDATE expenses SET status = ?, rejection_reason = ? WHERE id = ?', ['Rejected', rejection_reason, req.params.id]);
+        const updatedFields = {
+            status,
+            rejection_reason: status === 'Rejected' ? rejection_reason : null,
+        };
 
-        res.json({ message: 'Expense declined successfully' });
+        await pool.query('UPDATE expenses SET ? WHERE id = ?', [updatedFields, id]);
+
+        const [updatedExpense] = await pool.query(`
+            SELECT 
+                e.*, 
+                b.school_name as branch_name, 
+                COALESCE(s.name, sa.name) as author_name
+            FROM expenses e
+            JOIN branches b ON e.branch_id = b.id
+            LEFT JOIN staff s ON e.author_id = s.user_id
+            LEFT JOIN super_admins sa ON e.author_id = sa.user_id
+            WHERE e.id = ?
+        `, [id]);
+
+        res.json({ success: true, message: `Expense has been ${status.toLowerCase()}.`, data: updatedExpense[0] });
     } catch (err) {
         console.error(err);
-        res.status(500).json({ message: 'Server error' });
+        res.status(500).json({ success: false, message: 'Server error' });
     }
 });
+
+// @route   DELETE /api/expenses/:id
+// @desc    Delete an expense
+// @access  SuperAdmin
+router.delete('/:id', [auth, authorize(['SuperAdmin'])], async (req, res) => {
+    try {
+        const [expense] = await pool.query('SELECT * FROM expenses WHERE id = ?', [req.params.id]);
+        if (expense.length === 0) {
+            return res.status(404).json({ success: false, message: 'Expense not found' });
+        }
+
+        await pool.query('DELETE FROM expenses WHERE id = ?', [req.params.id]);
+
+        res.json({ success: true, message: 'Expense deleted successfully.' });
+    } catch (err) {
+        console.error('Error deleting expense:', err);
+        res.status(500).json({ success: false, message: 'Server error' });
+    }
+});
+
 
 module.exports = router;

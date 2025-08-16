@@ -140,15 +140,17 @@ async function initializeDatabase() {
                 id VARCHAR(36) PRIMARY KEY,
                 title VARCHAR(255) NOT NULL,
                 description TEXT,
-                cost INT NOT NULL,
+                cost DECIMAL(10, 2) NOT NULL,
                 status ENUM('Requested', 'Pending', 'Approved', 'Overdue', 'Rejected') NOT NULL DEFAULT 'Requested',
                 due_date DATE NOT NULL,
-                branch VARCHAR(255) NOT NULL,
-                author VARCHAR(255) NOT NULL,
+                branch_id VARCHAR(36) NOT NULL,
+                author_id VARCHAR(36) NOT NULL,
                 expense_type ENUM('Bill', 'Invoice', 'Repair') NOT NULL,
                 rejection_reason TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE,
+                FOREIGN KEY (author_id) REFERENCES users(id) ON DELETE CASCADE
             )
         `;
 
