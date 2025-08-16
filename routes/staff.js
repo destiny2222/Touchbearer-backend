@@ -749,6 +749,8 @@ router.get('/branch/:branchId', auth, async (req, res) => {
     }
 });
 
+
+
 // Get staff by status
 router.get('/status/:status', auth, async (req, res) => {
     try {

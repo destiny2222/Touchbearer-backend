@@ -45,10 +45,11 @@ const validateStaffData = (req, res, next) => {
     }
 
     // Validate salary and salary_type
-    if (salary !== undefined) {
-        // Convert to number for validation
+    if (salary !== undefined || salary_type !== undefined) {
+        // If either salary or salary_type is provided, both must be valid
         const salaryNum = Number(salary);
-        if (isNaN(salaryNum) || salaryNum < 0) {
+
+        if (salary !== undefined && (isNaN(salaryNum) || salaryNum < 0)) {
             return res.status(400).json({
                 success: false,
                 message: 'Salary must be a positive number'
@@ -56,18 +57,26 @@ const validateStaffData = (req, res, next) => {
         }
 
         // If salary is provided, salary_type is required
-        if (!salary_type) {
+        if (salary !== undefined && !salary_type) {
             return res.status(400).json({
                 success: false,
                 message: 'salary_type is required when salary is provided'
             });
         }
 
-        // Validate salary_type
-        if (!['monthly', 'hourly'].includes(salary_type)) {
+        // Validate salary_type if provided
+        if (salary_type && !['monthly', 'hourly'].includes(salary_type)) {
             return res.status(400).json({
                 success: false,
                 message: 'salary_type must be either "monthly" or "hourly"'
+            });
+        }
+
+        // If salary_type is provided, salary is required
+        if (salary_type && salary === undefined) {
+            return res.status(400).json({
+                success: false,
+                message: 'salary is required when salary_type is provided'
             });
         }
     }
