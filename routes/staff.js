@@ -7,7 +7,6 @@ const auth = require('../middleware/auth');
 const authorize = require('../middleware/authorize');
 const validateStaffData = require('../middleware/validateStaff');
 
-// Generate a random password
 function generatePassword() {
     const length = 10;
     const charset = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$';
@@ -18,14 +17,12 @@ function generatePassword() {
     return password;
 }
 
-// Calculate salary due date (30 days from creation or last payment)
 function calculateSalaryDueDate() {
     const date = new Date();
     date.setDate(date.getDate() + 30);
     return date.toISOString().split('T')[0];
 }
 
-// Validate salary data
 function validateSalaryData(salary, salary_type) {
     if (salary !== null && salary !== undefined) {
         if (isNaN(salary) || salary < 0) {
@@ -38,7 +35,6 @@ function validateSalaryData(salary, salary_type) {
     return null;
 }
 
-// Create staff member
 router.post('/create', auth, authorize(['SuperAdmin', 'Admin']), validateStaffData, async (req, res) => {
     const connection = await pool.getConnection();
 
@@ -57,7 +53,6 @@ router.post('/create', auth, authorize(['SuperAdmin', 'Admin']), validateStaffDa
             image
         } = req.body;
 
-        // Validate required fields
         if (!name || !email || !phone || !gender || !role_id || !branch_id) {
             return res.status(400).json({
                 success: false,
@@ -65,7 +60,6 @@ router.post('/create', auth, authorize(['SuperAdmin', 'Admin']), validateStaffDa
             });
         }
 
-        // Validate salary data
         const salaryError = validateSalaryData(salary, salary_type);
         if (salaryError) {
             return res.status(400).json({
@@ -74,7 +68,6 @@ router.post('/create', auth, authorize(['SuperAdmin', 'Admin']), validateStaffDa
             });
         }
 
-        // Validate gender
         const validGenders = ['male', 'female', 'other'];
         if (!validGenders.includes(gender.toLowerCase())) {
             return res.status(400).json({
@@ -83,7 +76,6 @@ router.post('/create', auth, authorize(['SuperAdmin', 'Admin']), validateStaffDa
             });
         }
 
-        // Check if email already exists
         const [existingUser] = await connection.query(
             'SELECT email FROM users WHERE email = ?',
             [email]
@@ -96,7 +88,6 @@ router.post('/create', auth, authorize(['SuperAdmin', 'Admin']), validateStaffDa
             });
         }
 
-        // Check if role exists and get role name
         const [roleData] = await connection.query(
             'SELECT id, name FROM roles WHERE id = ?',
             [role_id]
@@ -109,7 +100,6 @@ router.post('/create', auth, authorize(['SuperAdmin', 'Admin']), validateStaffDa
             });
         }
 
-        // Check if branch exists
         const [branchData] = await connection.query(
             'SELECT id, school_name FROM branches WHERE id = ?',
             [branch_id]
@@ -124,24 +114,20 @@ router.post('/create', auth, authorize(['SuperAdmin', 'Admin']), validateStaffDa
 
         await connection.beginTransaction();
 
-        // Generate password
         const password = generatePassword();
         const hashedPassword = await bcrypt.hash(password, 10);
 
-        // Create user account
         const userId = uuidv4();
         await connection.query(
             'INSERT INTO users (id, email, password) VALUES (?, ?, ?)',
             [userId, email, hashedPassword]
         );
 
-        // Assign role to user
         await connection.query(
             'INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)',
             [userId, role_id]
         );
 
-        // Create staff record
         const staffId = uuidv4();
         const salaryDueDate = salary ? calculateSalaryDueDate() : null;
 
@@ -203,7 +189,6 @@ router.post('/create', auth, authorize(['SuperAdmin', 'Admin']), validateStaffDa
     }
 });
 
-// Get all staff members
 router.get('/', auth, async (req, res) => {
     try {
         const query = `
@@ -267,7 +252,6 @@ router.get('/', auth, async (req, res) => {
     }
 });
 
-// Get single staff member
 router.get('/:id', auth, async (req, res) => {
     try {
         const query = `
@@ -337,7 +321,6 @@ router.get('/:id', auth, async (req, res) => {
     }
 });
 
-// Update staff member
 router.put('/:id/update', auth, authorize(['SuperAdmin', 'Admin']), validateStaffData, async (req, res) => {
     const connection = await pool.getConnection();
 
@@ -357,7 +340,6 @@ router.put('/:id/update', auth, authorize(['SuperAdmin', 'Admin']), validateStaf
             image
         } = req.body;
 
-        // Check if staff exists
         const [existingStaff] = await connection.query(
             'SELECT * FROM staff WHERE id = ?',
             [staffId]
@@ -372,7 +354,6 @@ router.put('/:id/update', auth, authorize(['SuperAdmin', 'Admin']), validateStaf
 
         const currentStaff = existingStaff[0];
 
-        // Validate salary data if provided
         if (salary !== undefined || salary_type !== undefined) {
             const salaryError = validateSalaryData(
                 salary ?? currentStaff.salary,
@@ -386,7 +367,6 @@ router.put('/:id/update', auth, authorize(['SuperAdmin', 'Admin']), validateStaf
             }
         }
 
-        // If email is being changed, check if new email is available
         if (email && email !== currentStaff.email) {
             const [emailCheck] = await connection.query(
                 'SELECT id FROM users WHERE email = ? AND id != ?',
@@ -401,7 +381,6 @@ router.put('/:id/update', auth, authorize(['SuperAdmin', 'Admin']), validateStaf
             }
         }
 
-        // Validate role if provided
         if (role_id) {
             const [roleData] = await connection.query(
                 'SELECT name FROM roles WHERE id = ?',
@@ -416,7 +395,6 @@ router.put('/:id/update', auth, authorize(['SuperAdmin', 'Admin']), validateStaf
             }
         }
 
-        // Validate branch if provided
         if (branch_id) {
             const [branchData] = await connection.query(
                 'SELECT school_name FROM branches WHERE id = ?',
@@ -433,7 +411,6 @@ router.put('/:id/update', auth, authorize(['SuperAdmin', 'Admin']), validateStaf
 
         await connection.beginTransaction();
 
-        // Update user email if changed
         if (email && email !== currentStaff.email) {
             await connection.query(
                 'UPDATE users SET email = ? WHERE id = ?',
@@ -441,7 +418,6 @@ router.put('/:id/update', auth, authorize(['SuperAdmin', 'Admin']), validateStaf
             );
         }
 
-        // Update user role if changed
         if (role_id && role_id !== currentStaff.role_id) {
             await connection.query(
                 'UPDATE user_roles SET role_id = ? WHERE user_id = ?',
@@ -449,7 +425,6 @@ router.put('/:id/update', auth, authorize(['SuperAdmin', 'Admin']), validateStaf
             );
         }
 
-        // Build update query for staff table
         const updateFields = [];
         const updateValues = [];
 
@@ -465,7 +440,6 @@ router.put('/:id/update', auth, authorize(['SuperAdmin', 'Admin']), validateStaf
         if (branch_id) updateFields.push('branch_id = ?'), updateValues.push(branch_id);
         if (image !== undefined) updateFields.push('image_url = ?'), updateValues.push(image);
 
-        // Update salary due date if salary is being set for the first time
         if (salary !== undefined && salary !== null && !currentStaff.salary) {
             updateFields.push('salary_due_date = ?');
             updateValues.push(calculateSalaryDueDate());
@@ -481,7 +455,6 @@ router.put('/:id/update', auth, authorize(['SuperAdmin', 'Admin']), validateStaf
 
         await connection.commit();
 
-        // Fetch updated staff data
         const [updatedStaff] = await connection.query(`
             SELECT 
                 s.*,
@@ -530,24 +503,37 @@ router.put('/:id/update', auth, authorize(['SuperAdmin', 'Admin']), validateStaf
     }
 });
 
-// Update staff status
-router.patch('/:id/status', auth, authorize(['SuperAdmin', 'Admin']), async (req, res) => {
+router.put('/:id/status', auth, authorize(['SuperAdmin', 'Admin']), async (req, res) => {
+    const connection = await pool.getConnection();
+
     try {
-        const { status } = req.body;
         const staffId = req.params.id;
+        const { status, reason } = req.body;
 
         const validStatuses = ['Active', 'On Leave', 'Not Paid', 'Suspended', 'Terminated'];
-
         if (!status || !validStatuses.includes(status)) {
             return res.status(400).json({
                 success: false,
-                message: 'Invalid status. Must be one of: Active, On Leave, Not Paid, Suspended, Terminated'
+                message: 'Invalid status. Must be one of: ' + validStatuses.join(', ')
             });
         }
 
-        // Check if staff exists
-        const [existing] = await pool.query(
-            'SELECT * FROM staff WHERE id = ?',
+        // Validate that the status is a string to prevent SQL injection
+        if (typeof status !== 'string') {
+            return res.status(400).json({
+                success: false,
+                message: 'Status must be a string'
+            });
+        }
+
+        await connection.beginTransaction();
+
+        const [existing] = await connection.query(
+            'SELECT s.*, u.id as user_id, r.name as role_name, b.school_name as branch_name FROM staff s ' +
+            'JOIN users u ON s.user_id = u.id ' +
+            'JOIN roles r ON s.role_id = r.id ' +
+            'JOIN branches b ON s.branch_id = b.id ' +
+            'WHERE s.id = ? FOR UPDATE',
             [staffId]
         );
 
@@ -558,18 +544,77 @@ router.patch('/:id/status', auth, authorize(['SuperAdmin', 'Admin']), async (req
             });
         }
 
-        // Update status
-        await pool.query(
-            'UPDATE staff SET status = ? WHERE id = ?',
-            [status, staffId]
+        const currentStaff = existing[0];
+
+        if (currentStaff.status === status) {
+            return res.status(400).json({
+                success: false,
+                message: `Staff is already ${status}`
+            });
+        }
+
+        let updateFields = { status };
+
+        if (status === 'Active') {
+            if (currentStaff.salary) {
+                updateFields.salary_due_date = calculateSalaryDueDate();
+            }
+        } else if (status === 'Terminated') {
+            // Generate a random password that the terminated staff can't guess
+            const randomPassword = require('crypto').randomBytes(32).toString('hex');
+            const hashedPassword = await bcrypt.hash(randomPassword, 10);
+
+            // Update the user's password
+            await connection.query(
+                'UPDATE users SET password = ? WHERE id = ?',
+                [hashedPassword, currentStaff.user_id]
+            );
+        }
+
+        await connection.query(
+            'UPDATE staff SET ? WHERE id = ?',
+            [updateFields, staffId]
         );
+
+        await connection.commit();
+
+        let message = '';
+        switch (status) {
+            case 'Active':
+                message = 'Staff successfully reinstated';
+                break;
+            case 'On Leave':
+                message = 'Staff marked as on leave';
+                break;
+            case 'Suspended':
+                message = 'Staff has been suspended';
+                break;
+            case 'Terminated':
+                message = 'Staff has been terminated';
+                break;
+            case 'Not Paid':
+                message = 'Staff marked as not paid';
+                break;
+            default:
+                message = 'Staff status updated successfully';
+        }
+
+        if (reason) {
+            message += `: ${reason}`;
+        }
 
         res.json({
             success: true,
-            message: `Staff member ${status.toLowerCase()} successfully`,
+            message,
             data: {
-                id: staffId,
-                status
+                id: currentStaff.id,
+                name: currentStaff.name,
+                email: currentStaff.email,
+                role: currentStaff.role_name,
+                branch: currentStaff.branch_name,
+                previousStatus: currentStaff.status,
+                newStatus: status,
+                salary_due_date: updateFields.salary_due_date || currentStaff.salary_due_date
             }
         });
 
@@ -579,17 +624,17 @@ router.patch('/:id/status', auth, authorize(['SuperAdmin', 'Admin']), async (req
             success: false,
             message: 'Server error while updating staff status'
         });
+    } finally {
+        connection.release();
     }
 });
 
-// Reset staff password
 router.post('/:id/reset-password', auth, authorize(['SuperAdmin', 'Admin']), async (req, res) => {
     const connection = await pool.getConnection();
 
     try {
         const staffId = req.params.id;
 
-        // Check if staff exists
         const [existing] = await connection.query(
             'SELECT user_id, email, name FROM staff WHERE id = ?',
             [staffId]
@@ -604,11 +649,9 @@ router.post('/:id/reset-password', auth, authorize(['SuperAdmin', 'Admin']), asy
 
         const staff = existing[0];
 
-        // Generate new password
         const newPassword = generatePassword();
         const hashedPassword = await bcrypt.hash(newPassword, 10);
 
-        // Update password in users table
         await connection.query(
             'UPDATE users SET password = ? WHERE id = ?',
             [hashedPassword, staff.user_id]
@@ -636,14 +679,12 @@ router.post('/:id/reset-password', auth, authorize(['SuperAdmin', 'Admin']), asy
     }
 });
 
-// Delete staff member (SuperAdmin only)
 router.delete('/:id', auth, authorize(['SuperAdmin']), async (req, res) => {
     const connection = await pool.getConnection();
 
     try {
         const staffId = req.params.id;
 
-        // Check if staff exists
         const [existing] = await connection.query(
             'SELECT * FROM staff WHERE id = ?',
             [staffId]
@@ -658,13 +699,10 @@ router.delete('/:id', auth, authorize(['SuperAdmin']), async (req, res) => {
 
         await connection.beginTransaction();
 
-        // Delete from staff table
         await connection.query('DELETE FROM staff WHERE id = ?', [staffId]);
 
-        // Delete user roles
         await connection.query('DELETE FROM user_roles WHERE user_id = ?', [existing[0].user_id]);
 
-        // Delete from users table
         await connection.query('DELETE FROM users WHERE id = ?', [existing[0].user_id]);
 
         await connection.commit();
@@ -686,7 +724,6 @@ router.delete('/:id', auth, authorize(['SuperAdmin']), async (req, res) => {
     }
 });
 
-// Get staff by branch
 router.get('/branch/:branchId', auth, async (req, res) => {
     try {
         const query = `
@@ -749,9 +786,6 @@ router.get('/branch/:branchId', auth, async (req, res) => {
     }
 });
 
-
-
-// Get staff by status
 router.get('/status/:status', auth, async (req, res) => {
     try {
         const status = req.params.status;
