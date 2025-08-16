@@ -150,7 +150,7 @@ router.post('/login', async (req, res) => {
             cache.put(user.id, roles, 6000000); // Cache for 100 minutes
         }
 
-        const token = jwt.sign({ id: user.id, roles }, process.env.JWT_SECRET, { expiresIn: '1h' });
+        const token = jwt.sign({ id: user.id, roles }, process.env.JWT_SECRET, { expiresIn: '7d' });
 
         if (roles.includes('SuperAdmin')) {
             const [superAdminResult] = await pool.query('SELECT * FROM super_admins WHERE user_id = ?', [user.id]);
