@@ -2,21 +2,21 @@ const mysql = require('mysql2/promise');
 require('dotenv').config();
 
 const pool = mysql.createPool({
-  connectionLimit: 100,
-  host: process.env.DB_HOST,
-  user: process.env.DB_USER,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_NAME,
-  port: process.env.DB_PORT
+    connectionLimit: 100,
+    host: process.env.DB_HOST,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    database: process.env.DB_NAME,
+    port: process.env.DB_PORT
 });
 
 async function initializeDatabase() {
-  let connection;
-  try {
-    connection = await pool.getConnection();
-    console.log("Connected to database!");
+    let connection;
+    try {
+        connection = await pool.getConnection();
+        console.log("Connected to database!");
 
-    const createUsersTable = `
+        const createUsersTable = `
             CREATE TABLE IF NOT EXISTS users (
                 id VARCHAR(36) PRIMARY KEY,
                 email VARCHAR(255) NOT NULL UNIQUE,
@@ -25,14 +25,14 @@ async function initializeDatabase() {
             )
         `;
 
-    const createRolesTable = `
+        const createRolesTable = `
             CREATE TABLE IF NOT EXISTS roles (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 name VARCHAR(255) NOT NULL UNIQUE
             )
         `;
 
-    const createUserRolesTable = `
+        const createUserRolesTable = `
             CREATE TABLE IF NOT EXISTS user_roles (
                 user_id VARCHAR(36),
                 role_id INT,
@@ -42,7 +42,7 @@ async function initializeDatabase() {
             )
         `;
 
-    const createParentsTable = `
+        const createParentsTable = `
             CREATE TABLE IF NOT EXISTS parents (
                 id VARCHAR(36) PRIMARY KEY,
                 user_id VARCHAR(36) NOT NULL,
@@ -54,7 +54,7 @@ async function initializeDatabase() {
             )
         `;
 
-    const createNewStudentTable = `
+        const createNewStudentTable = `
             CREATE TABLE IF NOT EXISTS new_students (
                 id VARCHAR(36) PRIMARY KEY,
                 parent_id VARCHAR(36) NOT NULL,
@@ -77,7 +77,7 @@ async function initializeDatabase() {
             )
         `;
 
-    const createSuperAdminsTable = `
+        const createSuperAdminsTable = `
             CREATE TABLE IF NOT EXISTS super_admins (
                 id VARCHAR(36) PRIMARY KEY,
                 user_id VARCHAR(36) NOT NULL,
@@ -89,7 +89,7 @@ async function initializeDatabase() {
             )
         `;
 
-    const createBranchesTable = `
+        const createBranchesTable = `
             CREATE TABLE IF NOT EXISTS branches (
                 id VARCHAR(36) PRIMARY KEY,
                 school_name VARCHAR(255) NOT NULL,
@@ -101,7 +101,7 @@ async function initializeDatabase() {
             )
         `;
 
-    const createStudentTable = `
+        const createStudentTable = `
             CREATE TABLE IF NOT EXISTS students (
                 id VARCHAR(36) PRIMARY KEY,
                 user_id VARCHAR(36) NOT NULL,
@@ -123,7 +123,7 @@ async function initializeDatabase() {
             )
         `;
 
-    const createEventsTable = `
+        const createEventsTable = `
             CREATE TABLE IF NOT EXISTS events (
                 id VARCHAR(36) PRIMARY KEY,
                 name VARCHAR(255) NOT NULL,
@@ -135,7 +135,7 @@ async function initializeDatabase() {
             )
         `;
 
-    const createExpensesTable = `
+        const createExpensesTable = `
             CREATE TABLE IF NOT EXISTS expenses (
                 id VARCHAR(36) PRIMARY KEY,
                 title VARCHAR(255) NOT NULL,
@@ -152,48 +152,76 @@ async function initializeDatabase() {
             )
         `;
 
-    await connection.query(createUsersTable);
-    console.log("Users table created");
+        const createStaffTable = `
+            CREATE TABLE IF NOT EXISTS staff (
+                id VARCHAR(36) PRIMARY KEY,
+                user_id VARCHAR(36) NOT NULL,
+                name VARCHAR(255) NOT NULL,
+                email VARCHAR(255) NOT NULL UNIQUE,
+                phone VARCHAR(255) NOT NULL,
+                address VARCHAR(500),
+                salary DECIMAL(10, 2) DEFAULT NULL,
+                salary_type ENUM('monthly', 'hourly') DEFAULT 'monthly',
+                gender ENUM('male', 'female', 'other') NOT NULL,
+                description TEXT,
+                role_id INT NOT NULL,
+                branch_id VARCHAR(36) NOT NULL,
+                image_url VARCHAR(500),
+                status ENUM('Active', 'On Leave', 'Not Paid', 'Suspended', 'Terminated') NOT NULL DEFAULT 'Active',
+                salary_due_date DATE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (role_id) REFERENCES roles(id),
+                FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE RESTRICT
+            )
+        `;
 
-    await connection.query(createRolesTable);
-    console.log("Roles table created");
+        await connection.query(createUsersTable);
+        console.log("Users table created");
 
-    await connection.query(createUserRolesTable);
-    console.log("User_roles table created");
+        await connection.query(createRolesTable);
+        console.log("Roles table created");
 
-    await connection.query(createParentsTable);
-    console.log("Parents table created");
+        await connection.query(createUserRolesTable);
+        console.log("User_roles table created");
 
-    await connection.query(createNewStudentTable);
-    console.log("New Students table created");
+        await connection.query(createParentsTable);
+        console.log("Parents table created");
 
-    await connection.query(createSuperAdminsTable);
-    console.log("Super Admins table created");
+        await connection.query(createNewStudentTable);
+        console.log("New Students table created");
 
-    await connection.query(createBranchesTable);
-    console.log("Branches table created");
+        await connection.query(createSuperAdminsTable);
+        console.log("Super Admins table created");
 
-    await connection.query(createStudentTable);
-    console.log("Students table created");
+        await connection.query(createBranchesTable);
+        console.log("Branches table created");
 
-    await connection.query(createEventsTable);
-    console.log("Events table created");
+        await connection.query(createStudentTable);
+        console.log("Students table created");
 
-    await connection.query(createExpensesTable);
-    console.log("Expenses table created");
+        await connection.query(createEventsTable);
+        console.log("Events table created");
 
-    const roles = ['NewStudent', 'Student', 'Teacher', 'Parent', 'Admin', 'SuperAdmin'];
-    for (const role of roles) {
-      await connection.query('INSERT IGNORE INTO roles (name) VALUES (?)', [role]);
+        await connection.query(createExpensesTable);
+        console.log("Expenses table created");
+
+        await connection.query(createStaffTable);
+        console.log("Staff table created");
+
+        const roles = ['NewStudent', 'Student', 'Teacher', 'Parent', 'Admin', 'SuperAdmin', 'NonTeachingStaff'];
+        for (const role of roles) {
+            await connection.query('INSERT IGNORE INTO roles (name) VALUES (?)', [role]);
+        }
+        console.log("Roles inserted");
+
+    } catch (err) {
+        console.error("Database initialization error:", err);
+        // process.exit(1); 
+    } finally {
+        if (connection) connection.release();
     }
-    console.log("Roles inserted");
-
-  } catch (err) {
-    console.error("Database initialization error:", err);
-    // process.exit(1); 
-  } finally {
-    if (connection) connection.release();
-  }
 }
 
 initializeDatabase();
