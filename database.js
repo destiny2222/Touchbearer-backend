@@ -57,6 +57,7 @@ async function initializeDatabase() {
         const createNewStudentTable = `
             CREATE TABLE IF NOT EXISTS new_students (
                 id VARCHAR(36) PRIMARY KEY,
+                student_id VARCHAR(10) NOT NULL UNIQUE,
                 parent_id VARCHAR(36) NOT NULL,
                 first_name VARCHAR(255) NOT NULL,
                 last_name VARCHAR(255) NOT NULL,
@@ -65,15 +66,17 @@ async function initializeDatabase() {
                 address VARCHAR(255) NOT NULL,
                 nationality VARCHAR(255) NOT NULL,
                 state VARCHAR(255) NOT NULL,
-                class_applying VARCHAR(255) NOT NULL,
-                branch_id VARCHAR(255) NOT NULL,
+                class_id VARCHAR(36) NOT NULL,
+                branch_id VARCHAR(36) NOT NULL,
                 previous_school VARCHAR(255),
                 religion VARCHAR(255) NOT NULL,
                 disability VARCHAR(255),
                 score INT DEFAULT 0,
                 payment_status VARCHAR(255) NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (parent_id) REFERENCES parents(id)
+                FOREIGN KEY (parent_id) REFERENCES parents(id) ON DELETE CASCADE,
+                FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE,
+                FOREIGN KEY (class_id) REFERENCES classes(id) ON DELETE CASCADE
             )
         `;
 
@@ -113,13 +116,15 @@ async function initializeDatabase() {
                 address VARCHAR(255) NOT NULL,
                 nationality VARCHAR(255) NOT NULL,
                 state VARCHAR(255) NOT NULL,
-                class_admitted VARCHAR(255) NOT NULL,
-                branch_id VARCHAR(255) NOT NULL,
+                class_id VARCHAR(36) NOT NULL,
+                branch_id VARCHAR(36) NOT NULL,
                 religion VARCHAR(255) NOT NULL,
                 disability VARCHAR(255),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users(id),
-                FOREIGN KEY (parent_id) REFERENCES parents(id)
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (parent_id) REFERENCES parents(id) ON DELETE CASCADE,
+                FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE,
+                FOREIGN KEY (class_id) REFERENCES classes(id) ON DELETE CASCADE
             )
         `;
 

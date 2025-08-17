@@ -139,14 +139,21 @@ router.get('/', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => 
 // @access  Student, NewStudent
 router.get('/subjects', [auth, authorize(['Student', 'NewStudent'])], async (req, res) => {
     try {
-        // This logic assumes a student is assigned to a single, active exam.
-        // You might need a more complex lookup based on class and date.
-        const [studentClass] = await pool.query('SELECT class_admitted FROM students WHERE user_id = ?', [req.user.id]);
-        if (studentClass.length === 0) {
-            return res.status(404).json({ success: false, message: "Student class not found." });
+        let studentClassId;
+        const [newStudent] = await pool.query('SELECT class_id FROM new_students WHERE student_id = (SELECT email FROM users WHERE id = ?)', [req.user.id]);
+
+        if (newStudent.length > 0) {
+            studentClassId = newStudent[0].class_id;
+        } else {
+            const [existingStudent] = await pool.query('SELECT class_id FROM students WHERE user_id = ?', [req.user.id]);
+            if (existingStudent.length > 0) {
+                studentClassId = existingStudent[0].class_id;
+            } else {
+                return res.status(404).json({ success: false, message: "Student class not found." });
+            }
         }
 
-        const [exam] = await pool.query('SELECT id FROM exams WHERE class_id = (SELECT id FROM classes WHERE name = ?) AND exam_date_time > NOW() ORDER BY exam_date_time ASC LIMIT 1', [studentClass[0].class_admitted]);
+        const [exam] = await pool.query('SELECT id FROM exams WHERE class_id = ? AND exam_date_time > NOW() ORDER BY exam_date_time ASC LIMIT 1', [studentClassId]);
 
         if (exam.length === 0) {
             return res.status(404).json({ success: false, message: "No upcoming exams found for your class." });

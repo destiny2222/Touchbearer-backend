@@ -236,4 +236,65 @@ router.post('/login/staff', async (req, res) => {
     }
 });
 
+router.post('/login/cbt/student', async (req, res) => {
+    const { student_id, password } = req.body;
+
+    if (!student_id || !password) {
+        return res.status(400).json({ success: false, message: 'Please provide student ID and password.' });
+    }
+
+    try {
+        const [users] = await pool.query('SELECT * FROM users WHERE email = ?', [student_id]);
+        if (users.length === 0) {
+            return res.status(400).json({ success: false, message: 'Invalid credentials.' });
+        }
+
+        const user = users[0];
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (!isMatch) {
+            return res.status(400).json({ success: false, message: 'Invalid credentials.' });
+        }
+
+        const [userRoles] = await pool.query(
+            'SELECT r.name FROM roles r JOIN user_roles ur ON r.id = ur.role_id WHERE ur.user_id = ?',
+            [user.id]
+        );
+        const roles = userRoles.map(r => r.name);
+
+        if (!roles.includes('NewStudent')) {
+            return res.status(403).json({ success: false, message: 'Access denied. This login is for new students taking an entrance exam.' });
+        }
+
+        const [studentDetailsResult] = await pool.query(
+            `SELECT 
+                ns.id, ns.student_id, ns.first_name, ns.last_name, c.name as class_applying,
+                b.school_name as branch_name
+             FROM new_students ns
+             JOIN branches b ON ns.branch_id = b.id
+             JOIN classes c ON ns.class_id = c.id
+             WHERE ns.student_id = ?`,
+            [student_id]
+        );
+
+        if (studentDetailsResult.length === 0) {
+            return res.status(404).json({ success: false, message: 'Student enrollment details not found.' });
+        }
+
+        const token = jwt.sign({ id: user.id, roles }, process.env.JWT_SECRET, { expiresIn: '1d' });
+
+        res.json({
+            success: true,
+            message: 'Login successful. Welcome to your entrance exam.',
+            data: {
+                student: studentDetailsResult[0],
+                token
+            }
+        });
+
+    } catch (error) {
+        console.error('Student Login Error:', error);
+        res.status(500).json({ success: false, message: 'An error occurred during login. Please try again.' });
+    }
+});
+
 module.exports = router;
