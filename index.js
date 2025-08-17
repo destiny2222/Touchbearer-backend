@@ -15,6 +15,7 @@ app.use('/api/branches', require('./routes/branches'));
 app.use('/api/expenses', require('./routes/expenses'));
 app.use('/api/staff', require('./routes/staff'));
 app.use('/api/classes', require('./routes/classes'));
+app.use('/api/exams', require('./routes/exams'));
 
 app.get('/', (req, res) => {
     res.json({ message: 'Hello World!' });

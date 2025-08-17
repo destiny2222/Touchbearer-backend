@@ -192,6 +192,60 @@ async function initializeDatabase() {
             )
         `;
 
+        const createExamsTable = `
+            CREATE TABLE IF NOT EXISTS exams (
+                id VARCHAR(36) PRIMARY KEY,
+                title VARCHAR(255) NOT NULL,
+                exam_type ENUM('Internal', 'External') NOT NULL,
+                subject_type ENUM('Multi-Subject', 'Single-Subject') NOT NULL,
+                class_id VARCHAR(36),
+                branch_id VARCHAR(36) NOT NULL,
+                exam_date_time DATETIME NOT NULL,
+                duration_hours DECIMAL(4, 2) NOT NULL,
+                created_by VARCHAR(36) NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (class_id) REFERENCES classes(id) ON DELETE SET NULL,
+                FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE,
+                FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
+            )
+        `;
+
+        const createSubjectsTable = `
+            CREATE TABLE IF NOT EXISTS subjects (
+                id VARCHAR(36) PRIMARY KEY,
+                exam_id VARCHAR(36) NOT NULL,
+                title VARCHAR(255) NOT NULL,
+                FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE
+            )
+        `;
+
+        const createQuestionsTable = `
+            CREATE TABLE IF NOT EXISTS questions (
+                id VARCHAR(36) PRIMARY KEY,
+                subject_id VARCHAR(36) NOT NULL,
+                question_text TEXT NOT NULL,
+                options JSON NOT NULL,
+                correct_answer_index INT NOT NULL,
+                FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE CASCADE
+            )
+        `;
+
+        const createExamResultsTable = `
+            CREATE TABLE IF NOT EXISTS exam_results (
+                id VARCHAR(36) PRIMARY KEY,
+                exam_id VARCHAR(36) NOT NULL,
+                student_id VARCHAR(36) NOT NULL,
+                score DECIMAL(5, 2) NOT NULL,
+                total_questions INT NOT NULL,
+                answered_questions INT NOT NULL,
+                answers JSON,
+                submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE,
+                FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+        `;
+
         await connection.query(createUsersTable);
         console.log("Users table created");
 
@@ -227,6 +281,18 @@ async function initializeDatabase() {
 
         await connection.query(createClassesTable);
         console.log("Classes table created");
+
+        await connection.query(createExamsTable);
+        console.log("Exams table created");
+
+        await connection.query(createSubjectsTable);
+        console.log("Subjects table created");
+
+        await connection.query(createQuestionsTable);
+        console.log("Questions table created");
+
+        await connection.query(createExamResultsTable);
+        console.log("Exam results table created");
 
         const roles = ['NewStudent', 'Student', 'Teacher', 'Parent', 'Admin', 'SuperAdmin', 'NonTeachingStaff'];
         for (const role of roles) {
