@@ -183,7 +183,7 @@ router.get('/subjects', [auth, authorize(['Student', 'NewStudent'])], async (req
             return res.status(404).json({ success: false, message: "No upcoming exams found for your class." });
         }
 
-        const [subjects] = await pool.query('SELECT id, title, exam_id FROM subjects WHERE exam_id = ?', [exam[0].id]);
+        const [subjects] = await pool.query('SELECT s.id, s.title, s.exam_id, e.duration_hours AS exam_duration FROM subjects s JOIN exams e ON s.exam_id = e.id WHERE s.exam_id = ?', [exam[0].id]);
         res.json({ success: true, data: subjects });
         console.log('Subjects fetched successfully.');
     } catch (err) {
