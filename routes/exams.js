@@ -173,6 +173,34 @@ router.get('/subjects', [auth, authorize(['Student', 'NewStudent'])], async (req
 // @access  Student, NewStudent
 router.get('/subjects/:subjectId/questions', [auth, authorize(['Student', 'NewStudent'])], async (req, res) => {
     try {
+        // Find the exam for the subject to check the time window
+        const [subjects] = await pool.query('SELECT exam_id FROM subjects WHERE id = ?', [req.params.subjectId]);
+        if (subjects.length === 0) {
+            return res.status(404).json({ success: false, message: 'Subject not found.' });
+        }
+
+        const [exams] = await pool.query('SELECT exam_date_time, duration_hours FROM exams WHERE id = ?', [subjects[0].exam_id]);
+        if (exams.length === 0) {
+            return res.status(404).json({ success: false, message: 'Exam not found for this subject.' });
+        }
+
+        const now = new Date();
+        const examDateTime = new Date(exams[0].exam_date_time);
+
+        // Allowed to fetch 30 mins before exam starts
+        const allowedStartTime = new Date(examDateTime.getTime() - 30 * 60 * 1000);
+
+        // Exam ends after its duration
+        const examEndTime = new Date(examDateTime.getTime() + exams[0].duration_hours * 60 * 60 * 1000);
+
+        if (now < allowedStartTime) {
+            return res.status(403).json({ success: false, message: 'It is not yet time for the exam.' });
+        }
+
+        if (now > examEndTime) {
+            return res.status(403).json({ success: false, message: 'The time for this exam has passed.' });
+        }
+
         const [questions] = await pool.query('SELECT id, question_text as text, options FROM questions WHERE subject_id = ?', [req.params.subjectId]);
         res.json({ success: true, data: questions });
         console.log('Questions fetched successfully.');
@@ -208,6 +236,12 @@ router.post('/answers', [auth, authorize(['Student', 'NewStudent'])], async (req
 
         const [subject] = await connection.query('SELECT exam_id FROM subjects WHERE id = ?', [questions[0].subject_id]);
         const exam_id = subject[0].exam_id;
+
+        const [existingResult] = await connection.query('SELECT id FROM exam_results WHERE exam_id = ? AND student_id = ?', [exam_id, student_id]);
+        if (existingResult.length > 0) {
+            await connection.rollback();
+            return res.status(400).json({ success: false, message: 'You have already submitted answers for this exam.' });
+        }
 
         let score = 0;
         const questionMap = new Map(questions.map(q => [q.id, q.correct_answer_index]));
