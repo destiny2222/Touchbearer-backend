@@ -53,6 +53,17 @@ router.post('/create', auth, authorize(['SuperAdmin', 'Admin']), validateStaffDa
             image
         } = req.body;
 
+        if (req.user.roles.includes('Admin')) {
+            const [adminStaff] = await connection.query('SELECT branch_id FROM staff WHERE user_id = ?', [req.user.id]);
+            if (adminStaff.length === 0) {
+                return res.status(403).json({ success: false, message: 'Admin not associated with a branch.' });
+            }
+            const adminBranchId = adminStaff[0].branch_id;
+            if (branch_id !== adminBranchId) {
+                return res.status(403).json({ success: false, message: 'Admins can only create staff for their own branch.' });
+            }
+        }
+
         if (!name || !email || !phone || !gender || !role_id || !branch_id) {
             return res.status(400).json({
                 success: false,
@@ -301,6 +312,14 @@ router.get('/:id', auth, async (req, res) => {
         }
 
         const member = staff[0];
+
+        if (req.user.roles.includes('Admin')) {
+            const [adminStaff] = await pool.query('SELECT branch_id FROM staff WHERE user_id = ?', [req.user.id]);
+            if (adminStaff.length === 0 || adminStaff[0].branch_id !== member.branchId) {
+                return res.status(403).json({ success: false, message: 'You are not authorized to view this staff member.' });
+            }
+        }
+
         res.json({
             success: true,
             data: {
@@ -365,6 +384,16 @@ router.put('/:id/update', auth, authorize(['SuperAdmin', 'Admin']), validateStaf
         }
 
         const currentStaff = existingStaff[0];
+
+        if (req.user.roles.includes('Admin')) {
+            const [adminStaff] = await connection.query('SELECT branch_id FROM staff WHERE user_id = ?', [req.user.id]);
+            if (adminStaff.length === 0 || adminStaff[0].branch_id !== currentStaff.branch_id) {
+                return res.status(403).json({ success: false, message: 'You are not authorized to update this staff member.' });
+            }
+            if (branch_id && branch_id !== adminStaff[0].branch_id) {
+                return res.status(403).json({ success: false, message: 'Admins cannot change the branch of a staff member.' });
+            }
+        }
 
         if (salary !== undefined || salary_type !== undefined) {
             const salaryError = validateSalaryData(
