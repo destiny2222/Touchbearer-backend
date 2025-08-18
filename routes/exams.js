@@ -42,6 +42,30 @@ router.post('/store', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, re
         }
         const class_id = classInfo[0].id;
 
+        // Check for scheduling conflicts with a 1-hour gap
+        const newExamStartTime = new Date(dateTime);
+        const newExamEndTime = new Date(newExamStartTime.getTime() + duration * 60 * 60 * 1000);
+
+        const [existingExams] = await connection.query('SELECT exam_date_time, duration_hours FROM exams WHERE class_id = ?', [class_id]);
+
+        for (const existingExam of existingExams) {
+            const existingExamStartTime = new Date(existingExam.exam_date_time);
+            const existingExamEndTime = new Date(existingExamStartTime.getTime() + existingExam.duration_hours * 60 * 60 * 1000);
+
+            // Create a buffer of 1 hour before and after the existing exam
+            const bufferStart = new Date(existingExamStartTime.getTime() - 60 * 60 * 1000);
+            const bufferEnd = new Date(existingExamEndTime.getTime() + 60 * 60 * 1000);
+
+            // Check if the new exam's time range overlaps with the buffer
+            if (newExamStartTime < bufferEnd && newExamEndTime > bufferStart) {
+                await connection.rollback();
+                return res.status(400).json({
+                    success: false,
+                    message: 'Schedule conflict: The new exam is too close to an existing one. Please ensure at least a 1-hour gap.'
+                });
+            }
+        }
+
         const newExam = {
             id: uuidv4(),
             title,
