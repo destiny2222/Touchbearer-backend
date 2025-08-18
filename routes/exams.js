@@ -42,7 +42,7 @@ router.post('/store', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, re
         }
         const class_id = classInfo[0].id;
 
-        // Check for scheduling conflicts with a 1-hour gap
+        // Check for scheduling conflicts
         const newExamStartTime = new Date(dateTime);
         const newExamEndTime = new Date(newExamStartTime.getTime() + duration * 60 * 60 * 1000);
 
@@ -52,16 +52,12 @@ router.post('/store', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, re
             const existingExamStartTime = new Date(existingExam.exam_date_time);
             const existingExamEndTime = new Date(existingExamStartTime.getTime() + existingExam.duration_hours * 60 * 60 * 1000);
 
-            // Create a buffer of 1 hour before and after the existing exam
-            const bufferStart = new Date(existingExamStartTime.getTime() - 60 * 60 * 1000);
-            const bufferEnd = new Date(existingExamEndTime.getTime() + 60 * 60 * 1000);
-
-            // Check if the new exam's time range overlaps with the buffer
-            if (newExamStartTime < bufferEnd && newExamEndTime > bufferStart) {
+            // Check if the time ranges overlap. Exams can be scheduled back-to-back.
+            if (newExamStartTime < existingExamEndTime && newExamEndTime > existingExamStartTime) {
                 await connection.rollback();
                 return res.status(400).json({
                     success: false,
-                    message: 'Schedule conflict: The new exam is too close to an existing one. Please ensure at least a 1-hour gap.'
+                    message: 'Schedule conflict: The new exam time overlaps with an existing one.'
                 });
             }
         }
@@ -152,6 +148,107 @@ router.get('/', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => 
     } catch (err) {
         console.error('Error fetching exams:', err);
         res.status(500).json({ success: false, message: 'Server error while fetching exams.' });
+    }
+});
+
+
+// @route   PUT /api/exams/:examId
+// @desc    Update an existing exam
+// @access  Admin, SuperAdmin
+router.put('/:examId', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => {
+    const { examId } = req.params;
+    const { title, examType, dateTime, duration } = req.body;
+
+    // Basic validation
+    if (!title || !examType || !dateTime || !duration) {
+        return res.status(400).json({ success: false, message: 'Please provide all required fields for update.' });
+    }
+
+    const connection = await pool.getConnection();
+    try {
+        await connection.beginTransaction();
+
+        const [exam] = await connection.query('SELECT branch_id, class_id FROM exams WHERE id = ?', [examId]);
+        if (exam.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ success: false, message: 'Exam not found.' });
+        }
+
+        if (req.user.roles.includes('Admin')) {
+            const [adminStaff] = await connection.query('SELECT branch_id FROM staff WHERE user_id = ?', [req.user.id]);
+            if (adminStaff.length === 0 || adminStaff[0].branch_id !== exam[0].branch_id) {
+                await connection.rollback();
+                return res.status(403).json({ success: false, message: 'You are not authorized to update this exam.' });
+            }
+        }
+
+        // Check for scheduling conflicts
+        const newExamStartTime = new Date(dateTime);
+        const newExamEndTime = new Date(newExamStartTime.getTime() + duration * 60 * 60 * 1000);
+        const [existingExams] = await connection.query('SELECT exam_date_time, duration_hours FROM exams WHERE class_id = ? AND id != ?', [exam[0].class_id, examId]);
+
+        for (const existingExam of existingExams) {
+            const existingExamStartTime = new Date(existingExam.exam_date_time);
+            const existingExamEndTime = new Date(existingExamStartTime.getTime() + existingExam.duration_hours * 60 * 60 * 1000);
+
+            // Check if the time ranges overlap. Exams can be scheduled back-to-back.
+            if (newExamStartTime < existingExamEndTime && newExamEndTime > existingExamStartTime) {
+                await connection.rollback();
+                return res.status(400).json({
+                    success: false,
+                    message: 'Schedule conflict: The updated exam time overlaps with an existing one.'
+                });
+            }
+        }
+
+        const updatedExam = {
+            title,
+            exam_type: examType,
+            exam_date_time: dateTime,
+            duration_hours: duration
+        };
+
+        await connection.query('UPDATE exams SET ? WHERE id = ?', [updatedExam, examId]);
+        await connection.commit();
+
+        res.json({ success: true, message: 'Exam updated successfully.', data: updatedExam });
+        console.log('Exam updated successfully.');
+
+    } catch (err) {
+        await connection.rollback();
+        console.error('Error updating exam:', err);
+        res.status(500).json({ success: false, message: 'Server error while updating exam.' });
+    } finally {
+        connection.release();
+    }
+});
+
+// @route   DELETE /api/exams/:examId
+// @desc    Delete an exam
+// @access  Admin, SuperAdmin
+router.delete('/:examId', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => {
+    const { examId } = req.params;
+
+    try {
+        const [exam] = await pool.query('SELECT branch_id FROM exams WHERE id = ?', [examId]);
+        if (exam.length === 0) {
+            return res.status(404).json({ success: false, message: 'Exam not found.' });
+        }
+
+        if (req.user.roles.includes('Admin')) {
+            const [adminStaff] = await pool.query('SELECT branch_id FROM staff WHERE user_id = ?', [req.user.id]);
+            if (adminStaff.length === 0 || adminStaff[0].branch_id !== exam[0].branch_id) {
+                return res.status(403).json({ success: false, message: 'You are not authorized to delete this exam.' });
+            }
+        }
+
+        await pool.query('DELETE FROM exams WHERE id = ?', [examId]);
+        res.json({ success: true, message: 'Exam deleted successfully.' });
+        console.log('Exam deleted successfully.');
+
+    } catch (err) {
+        console.error('Error deleting exam:', err);
+        res.status(500).json({ success: false, message: 'Server error while deleting exam.' });
     }
 });
 
