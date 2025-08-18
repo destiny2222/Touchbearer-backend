@@ -14,7 +14,7 @@ const authorize = require('../middleware/authorize');
  */
 async function generateStudentId() {
     const prefix = 'ttb';
-    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
     let isUnique = false;
     let studentId = '';
 
