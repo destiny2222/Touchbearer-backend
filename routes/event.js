@@ -6,20 +6,57 @@ const auth = require('../middleware/auth');
 const authorize = require('../middleware/authorize');
 
 // Get all events
-router.get('/events', auth, authorize(['SuperAdmin', 'Admin']), async (req, res) => {
+router.get('/events', auth, async (req, res) => {
     try {
         let query = 'SELECT * FROM events';
         const queryParams = [];
 
-        if (req.user.roles.includes('Admin')) {
-            const [adminStaff] = await pool.query('SELECT branch_id FROM staff WHERE user_id = ?', [req.user.id]);
-            if (adminStaff.length === 0) {
-                return res.status(403).json({ message: 'Admin not associated with any branch.' });
+        if (!req.user.roles.includes('SuperAdmin')) {
+            const branchIds = new Set();
+            const userId = req.user.id;
+            const userEmail = req.user.email; // For NewStudent lookup
+
+            // Staff (Admin, Teacher, etc.)
+            if (req.user.roles.some(r => ['Admin', 'Teacher', 'NonTeachingStaff'].includes(r))) {
+                const [staff] = await pool.query('SELECT branch_id FROM staff WHERE user_id = ?', [userId]);
+                if (staff.length > 0) branchIds.add(staff[0].branch_id);
             }
-            const adminBranchId = adminStaff[0].branch_id;
-            query += ' WHERE branch_id = ?';
-            queryParams.push(adminBranchId);
+
+            // Enrolled Students
+            if (req.user.roles.includes('Student')) {
+                const [student] = await pool.query('SELECT branch_id FROM students WHERE user_id = ?', [userId]);
+                if (student.length > 0) branchIds.add(student[0].branch_id);
+            }
+
+            // New Students
+            if (req.user.roles.includes('NewStudent')) {
+                const [newStudent] = await pool.query('SELECT branch_id FROM new_students WHERE student_id = ?', [userEmail]);
+                if (newStudent.length > 0) branchIds.add(newStudent[0].branch_id);
+            }
+
+            // Parents
+            if (req.user.roles.includes('Parent')) {
+                const [parent] = await pool.query('SELECT id FROM parents WHERE user_id = ?', [userId]);
+                if (parent.length > 0) {
+                    const parentId = parent[0].id;
+                    const [studentBranches] = await pool.query('SELECT DISTINCT branch_id FROM students WHERE parent_id = ?', [parentId]);
+                    studentBranches.forEach(b => branchIds.add(b.branch_id));
+                    const [newStudentBranches] = await pool.query('SELECT DISTINCT branch_id FROM new_students WHERE parent_id = ?', [parentId]);
+                    newStudentBranches.forEach(b => branchIds.add(b.branch_id));
+                }
+            }
+
+            const finalBranchIds = Array.from(branchIds);
+
+            if (finalBranchIds.length > 0) {
+                query += ` WHERE branch_id IN (${finalBranchIds.map(() => '?').join(',')})`;
+                queryParams.push(...finalBranchIds);
+            } else {
+                return res.json([]);
+            }
         }
+
+        query += ' ORDER BY event_date DESC';
 
         const [rows] = await pool.query(query, queryParams);
         res.json(rows);

@@ -177,6 +177,7 @@ async function initializeDatabase() {
                 description TEXT,
                 role_id INT NOT NULL,
                 branch_id VARCHAR(36) NOT NULL,
+                class_id VARCHAR(36) DEFAULT NULL,
                 image_url VARCHAR(500),
                 status ENUM('Active', 'On Leave', 'Not Paid', 'Suspended', 'Terminated') NOT NULL DEFAULT 'Active',
                 salary_due_date DATE,
@@ -184,7 +185,8 @@ async function initializeDatabase() {
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
                 FOREIGN KEY (role_id) REFERENCES roles(id),
-                FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE RESTRICT
+                FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE RESTRICT,
+                FOREIGN KEY (class_id) REFERENCES classes(id) ON DELETE SET NULL
             )
         `;
 
@@ -311,7 +313,7 @@ async function initializeDatabase() {
 
     } catch (err) {
         console.error("Database initialization error:", err);
-        // process.exit(1); 
+        // process.exit(1);
     } finally {
         if (connection) connection.release();
     }

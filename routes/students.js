@@ -458,4 +458,88 @@ router.post('/migrate/:newStudentId', [auth, authorize(['Admin', 'SuperAdmin'])]
     }
 });
 
+// GET /api/students/class - Get all students in the authenticated teacher's class
+// this endpoint allow you to fetch student by class, can only use with teacher role
+router.get('/class', [auth, authorize(['Teacher'])], async (req, res) => {
+    try {
+        // Find the teacher's class
+        const [staff] = await pool.query('SELECT id FROM staff WHERE user_id = ?', [req.user.id]);
+        if (staff.length === 0) {
+            return res.status(403).json({ success: false, message: 'Authenticated user is not a staff member.' });
+        }
+        const teacherId = staff[0].id;
+
+        const [teacherClass] = await pool.query('SELECT id FROM classes WHERE teacher_id = ?', [teacherId]);
+        if (teacherClass.length === 0) {
+            return res.status(404).json({ success: false, message: 'Teacher is not assigned to any class.' });
+        }
+        const classId = teacherClass[0].id;
+
+        // Fetch students in that class
+        const query = `
+            SELECT s.id, s.first_name, s.last_name, s.dob, s.address, s.nationality, s.state, s.religion, s.disability, s.passport,
+                   p.name AS parent_name, p.email AS parent_email, p.phone AS parent_phone
+            FROM students s
+            JOIN parents p ON s.parent_id = p.id
+            WHERE s.class_id = ?
+            ORDER BY s.last_name ASC, s.first_name ASC
+        `;
+
+        const [students] = await pool.query(query, [classId]);
+        res.json({ success: true, data: students });
+
+    } catch (error) {
+        console.error('Error fetching students by class:', error);
+        res.status(500).json({ success: false, message: 'Server error while fetching students.' });
+    }
+});
+
+// POST /api/students/:id/reset-password - Reset a student's password
+router.post('/:id/reset-password', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => {
+    const { id } = req.params;
+    const connection = await pool.getConnection();
+
+    try {
+        await connection.beginTransaction();
+
+        const [studentRows] = await connection.query('SELECT * FROM students WHERE id = ?', [id]);
+        if (studentRows.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ success: false, message: 'Student not found.' });
+        }
+        const student = studentRows[0];
+
+        if (req.user.roles.includes('Admin')) {
+            const adminBranchId = await getAdminBranchId(req.user.id);
+            if (!adminBranchId || adminBranchId !== student.branch_id) {
+                await connection.rollback();
+                return res.status(403).json({ success: false, message: 'You are not authorized to reset this student\'s password.' });
+            }
+        }
+
+        const newPassword = generatePassword();
+        const hashedPassword = await bcrypt.hash(newPassword, 10);
+
+        await connection.query('UPDATE users SET password = ? WHERE id = ?', [hashedPassword, student.user_id]);
+
+        await connection.commit();
+
+        res.json({
+            success: true,
+            message: 'Student password has been reset successfully.',
+            data: {
+                student_id: student.id,
+                temporary_password: newPassword
+            }
+        });
+
+    } catch (error) {
+        await connection.rollback();
+        console.error('Reset student password error:', error);
+        res.status(500).json({ success: false, message: 'Server error while resetting password.' });
+    } finally {
+        connection.release();
+    }
+});
+
 module.exports = router;

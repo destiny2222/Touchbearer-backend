@@ -218,4 +218,58 @@ router.post('/login/cbt/student', async (req, res) => {
     }
 });
 
+// @route   POST /api/auth/student/login
+// @desc    Authenticate student & get token
+// @access  Public
+router.post('/student/login', async (req, res) => {
+    const { student_id, password } = req.body;
+    try {
+        let [users] = await pool.query('SELECT * FROM users WHERE email = ?', [student_id]);
+
+        if (users.length === 0) {
+            return res.status(400).json({ success: false, message: 'Invalid credentials' });
+        }
+        const user = users[0];
+
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (!isMatch) {
+            return res.status(400).json({ success: false, message: 'Invalid credentials' });
+        }
+
+        const [rolesResult] = await pool.query('SELECT r.name FROM roles r JOIN user_roles ur ON r.id = ur.role_id WHERE ur.user_id = ?', [user.id]);
+        const userRoles = rolesResult.map(r => r.name);
+
+        if (!userRoles.includes('Student') && !userRoles.includes('NewStudent')) {
+            return res.status(403).json({ success: false, message: 'Access denied. Not a student account.' });
+        }
+
+        let studentData;
+        if (userRoles.includes('Student')) {
+            const [studentResult] = await pool.query('SELECT * FROM students WHERE user_id = ?', [user.id]);
+            if (studentResult.length > 0) studentData = studentResult[0];
+        } else if (userRoles.includes('NewStudent')) {
+            const [newStudentResult] = await pool.query('SELECT * FROM new_students WHERE student_id = ?', [student_id]);
+            if (newStudentResult.length > 0) studentData = newStudentResult[0];
+        }
+
+        if (!studentData) {
+            return res.status(404).json({ success: false, message: 'Could not find student profile.' });
+        }
+
+        const payload = { id: user.id, roles: userRoles };
+        const token = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: '5h' });
+
+        res.json({
+            success: true,
+            token,
+            student: studentData,
+            message: 'Login successful'
+        });
+
+    } catch (err) {
+        console.error(err.message);
+        res.status(500).send('Server error');
+    }
+});
+
 module.exports = router;

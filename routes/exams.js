@@ -249,6 +249,34 @@ router.delete('/:examId', [auth, authorize(['Admin', 'SuperAdmin'])], async (req
     } catch (err) {
         console.error('Error deleting exam:', err);
         res.status(500).json({ success: false, message: 'Server error while deleting exam.' });
+    } finally {
+        connection.release();
+    }
+});
+
+// @route   GET /api/exams/class
+// @desc    Get all exams for the authenticated teacher's class
+// @access  Teacher
+router.get('/class', [auth, authorize(['Teacher'])], async (req, res) => {
+    try {
+        const [staff] = await pool.query('SELECT class_id FROM staff WHERE user_id = ?', [req.user.id]);
+
+        if (staff.length === 0) {
+            return res.status(403).json({ success: false, message: 'Authenticated user is not registered as a staff member.' });
+        }
+
+        const classId = staff[0].class_id;
+        if (!classId) {
+            return res.status(404).json({ success: false, message: 'Teacher is not assigned to a class.' });
+        }
+
+        const [exams] = await pool.query('SELECT * FROM exams WHERE class_id = ? ORDER BY exam_date_time DESC', [classId]);
+
+        res.json({ success: true, data: exams });
+
+    } catch (error) {
+        console.error("Error fetching exams for teacher's class:", error);
+        res.status(500).json({ success: false, message: 'Server error while fetching exams.' });
     }
 });
 

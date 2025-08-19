@@ -313,4 +313,96 @@ router.delete('/students/:id', [auth, authorize(['Admin', 'SuperAdmin'])], async
 });
 
 
+// @route   PUT /api/enrollment/students/:id
+// @desc    Update a new student's details
+// @access  Admin, SuperAdmin
+router.put('/students/:id', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => {
+    const { id } = req.params;
+    const {
+        first_name, last_name, dob, passport, address, nationality,
+        state, class_id, branch_id, previous_school, religion,
+        disability, parent_name, parent_phone, parent_email, payment_status
+    } = req.body;
+
+    const connection = await pool.getConnection();
+    try {
+        await connection.beginTransaction();
+
+        const [studentResult] = await connection.query('SELECT * FROM new_students WHERE id = ?', [id]);
+        if (studentResult.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ success: false, message: 'Student not found.' });
+        }
+        const student = studentResult[0];
+
+        if (req.user.roles.includes('Admin')) {
+            const [adminStaff] = await connection.query('SELECT branch_id FROM staff WHERE user_id = ?', [req.user.id]);
+            if (adminStaff.length === 0 || adminStaff[0].branch_id !== student.branch_id) {
+                await connection.rollback();
+                return res.status(403).json({ success: false, message: 'You are not authorized to update this student.' });
+            }
+            if (branch_id && branch_id !== student.branch_id) {
+                await connection.rollback();
+                return res.status(403).json({ success: false, message: 'Admins cannot change a student\'s branch.' });
+            }
+        }
+
+        const [parent] = await connection.query('SELECT * FROM parents WHERE id = ?', [student.parent_id]);
+        if (parent.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ success: false, message: 'Associated parent not found for this student.' });
+        }
+        const currentParent = parent[0];
+
+        const updateParentFields = {};
+        if (parent_name && currentParent.name !== parent_name) updateParentFields.name = parent_name;
+        if (parent_phone && currentParent.phone !== parent_phone) updateParentFields.phone = parent_phone;
+
+        if (parent_email && currentParent.email !== parent_email) {
+            const [emailCheck] = await connection.query('SELECT id FROM users WHERE email = ? AND id != ?', [parent_email, currentParent.user_id]);
+            if (emailCheck.length > 0) {
+                await connection.rollback();
+                return res.status(400).json({ success: false, message: 'The provided parent email is already in use by another user.' });
+            }
+            await connection.query('UPDATE users SET email = ? WHERE id = ?', [parent_email, currentParent.user_id]);
+            updateParentFields.email = parent_email;
+        }
+
+        if (Object.keys(updateParentFields).length > 0) {
+            await connection.query('UPDATE parents SET ? WHERE id = ?', [updateParentFields, student.parent_id]);
+        }
+
+        const updateStudentFields = {};
+        if (first_name) updateStudentFields.first_name = first_name;
+        if (last_name) updateStudentFields.last_name = last_name;
+        if (dob) updateStudentFields.dob = dob;
+        if (passport) updateStudentFields.passport = passport;
+        if (address) updateStudentFields.address = address;
+        if (nationality) updateStudentFields.nationality = nationality;
+        if (state) updateStudentFields.state = state;
+        if (class_id) updateStudentFields.class_id = class_id;
+        if (branch_id) updateStudentFields.branch_id = branch_id;
+        if (previous_school) updateStudentFields.previous_school = previous_school;
+        if (religion) updateStudentFields.religion = religion;
+        if (disability !== undefined) updateStudentFields.disability = disability;
+        if (payment_status) updateStudentFields.payment_status = payment_status;
+
+        if (Object.keys(updateStudentFields).length > 0) {
+            await connection.query('UPDATE new_students SET ? WHERE id = ?', [updateStudentFields, id]);
+        }
+
+        await connection.commit();
+
+        res.json({ success: true, message: 'New student details updated successfully.' });
+
+    } catch (error) {
+        await connection.rollback();
+        console.error('Error updating new student:', error);
+        res.status(500).json({ success: false, message: 'Server error while updating student record.' });
+    } finally {
+        connection.release();
+    }
+});
+
+
 module.exports = router;
