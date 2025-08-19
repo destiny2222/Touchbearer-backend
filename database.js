@@ -10,6 +10,10 @@ const pool = mysql.createPool({
     port: process.env.DB_PORT
 });
 
+async function runMigrations(connection) {
+
+}
+
 async function initializeDatabase() {
     let connection;
     try {
@@ -47,7 +51,7 @@ async function initializeDatabase() {
                 id VARCHAR(36) PRIMARY KEY,
                 user_id VARCHAR(36) NOT NULL,
                 name VARCHAR(255) NOT NULL,
-                phone VARCHAR(255) NOT NULL,
+                phone VARCHAR(255) NOT NULL UNIQUE,
                 email VARCHAR(255) NOT NULL UNIQUE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(id)
@@ -112,17 +116,17 @@ async function initializeDatabase() {
                 first_name VARCHAR(255) NOT NULL,
                 last_name VARCHAR(255) NOT NULL,
                 dob DATE NOT NULL,
-                passport VARCHAR(255) NOT NULL,
-                address VARCHAR(255) NOT NULL,
-                nationality VARCHAR(255) NOT NULL,
-                state VARCHAR(255) NOT NULL,
+                passport VARCHAR(255),
+                address VARCHAR(255),
+                nationality VARCHAR(255),
+                state VARCHAR(255),
                 class_id VARCHAR(36) NOT NULL,
                 branch_id VARCHAR(36) NOT NULL,
-                religion VARCHAR(255) NOT NULL,
+                religion VARCHAR(255),
                 disability VARCHAR(255),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-                FOREIGN KEY (parent_id) REFERENCES parents(id) ON DELETE CASCADE,
+                FOREIGN KEY (parent_id) REFERENCES parents(id) ON DELETE RESTRICT,
                 FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE,
                 FOREIGN KEY (class_id) REFERENCES classes(id) ON DELETE CASCADE
             )
