@@ -213,5 +213,69 @@ router.delete('/:id', auth, authorize(['SuperAdmin', 'Admin']), async (req, res)
     }
 });
 
+// Get full class details by ID
+router.get('/full-class-details/:id', auth, authorize(['SuperAdmin', 'Admin', 'Teacher']), async (req, res) => {
+    const { id } = req.params;
+    const connection = await pool.getConnection();
+
+    try {
+        await connection.beginTransaction();
+
+        // 1. Fetch basic class details and teacher info
+        const [classInfo] = await connection.query(`
+            SELECT c.*, s.name as teacher_name, s.email as teacher_email, s.phone as teacher_phone
+            FROM classes c
+            LEFT JOIN staff s ON c.teacher_id = s.id
+            WHERE c.id = ?
+        `, [id]);
+
+        if (classInfo.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ success: false, message: 'Class not found.' });
+        }
+
+        // 2. Fetch all students in the class
+        const [students] = await connection.query(`
+            SELECT id, user_id, first_name, last_name, passport
+            FROM students 
+            WHERE class_id = ?
+        `, [id]);
+
+        // 3. Fetch upcoming assignments for the class
+        const [assignments] = await connection.query(`
+            SELECT id, title, subject, due_date
+            FROM assignments 
+            WHERE class_id = ? AND due_date >= CURDATE()
+            ORDER BY due_date ASC
+        `, [id]);
+
+        // 4. Fetch the timetable for the class
+        const [timetable] = await connection.query(`
+            SELECT timetable_data
+            FROM timetables
+            WHERE class_id = ?
+        `, [id]);
+
+        await connection.commit();
+
+        const result = {
+            ...classInfo[0],
+            students,
+            assignments,
+            timetable: timetable.length > 0 ? timetable[0].timetable_data : null,
+            total_student: students.length
+        };
+
+        res.status(200).json({ success: true, data: result });
+
+    } catch (error) {
+        await connection.rollback();
+        console.error('Error fetching full class details:', error);
+        res.status(500).json({ success: false, message: 'Server error while fetching class details.' });
+    } finally {
+        connection.release();
+    }
+});
+
 
 module.exports = router;

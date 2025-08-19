@@ -257,6 +257,38 @@ async function initializeDatabase() {
             )
         `;
 
+        const createTimetablesTable = `
+            CREATE TABLE IF NOT EXISTS timetables (
+                id VARCHAR(36) NOT NULL PRIMARY KEY,
+                class_id VARCHAR(36) NOT NULL,
+                branch_id VARCHAR(36) NOT NULL,
+                timetable_data JSON NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY (class_id),
+                FOREIGN KEY (class_id) REFERENCES classes(id) ON DELETE CASCADE,
+                FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE
+            )
+        `;
+
+        const createAssignmentsTable = `
+            CREATE TABLE IF NOT EXISTS assignments (
+                id VARCHAR(36) PRIMARY KEY,
+                title VARCHAR(255) NOT NULL,
+                details TEXT,
+                class_id VARCHAR(36) NOT NULL,
+                branch_id VARCHAR(36) NOT NULL,
+                teacher_id VARCHAR(36) NOT NULL,
+                subject VARCHAR(255) NOT NULL,
+                due_date DATETIME NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (class_id) REFERENCES classes(id) ON DELETE CASCADE,
+                FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE,
+                FOREIGN KEY (teacher_id) REFERENCES staff(id) ON DELETE CASCADE
+            )
+        `;
+
         await connection.query(createUsersTable);
         console.log("Users table created");
 
@@ -304,6 +336,12 @@ async function initializeDatabase() {
 
         await connection.query(createExamResultsTable);
         console.log("Exam results table created");
+
+        await connection.query(createTimetablesTable);
+        console.log("Timetables table created");
+
+        await connection.query(createAssignmentsTable);
+        console.log("Assignments table created");
 
         const roles = ['NewStudent', 'Student', 'Teacher', 'Parent', 'Admin', 'SuperAdmin', 'NonTeachingStaff'];
         for (const role of roles) {

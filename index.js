@@ -19,6 +19,8 @@ app.use('/api/exams', require('./routes/exams'));
 app.use('/api/enrollment', require('./routes/enrollment'));
 app.use('/api/parents', require('./routes/parents'));
 app.use('/api/students', require('./routes/students'));
+app.use('/api/timetables', require('./routes/timetables'));
+app.use('/api/assignments', require('./routes/assignments'));
 
 app.get('/', (req, res) => {
     res.json({ message: 'Hello World!' });
