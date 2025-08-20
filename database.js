@@ -289,6 +289,57 @@ async function initializeDatabase() {
             )
         `;
 
+        const createBroadcastsTable = `
+            CREATE TABLE IF NOT EXISTS broadcasts (
+                id VARCHAR(36) PRIMARY KEY,
+                title VARCHAR(255) NOT NULL,
+                message TEXT NOT NULL,
+                created_by VARCHAR(36) NOT NULL,
+                status ENUM('Sent', 'Draft') NOT NULL DEFAULT 'Draft',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE,
+                INDEX (title)
+            )
+        `;
+
+        const createBroadcastTagsTable = `
+            CREATE TABLE IF NOT EXISTS broadcast_tags (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                broadcast_id VARCHAR(36) NOT NULL,
+                tag VARCHAR(255) NOT NULL,
+                FOREIGN KEY (broadcast_id) REFERENCES broadcasts(id) ON DELETE CASCADE,
+                INDEX (broadcast_id),
+                INDEX (tag)
+            )
+        `;
+
+        const createBroadcastCCTable = `
+            CREATE TABLE IF NOT EXISTS broadcast_cc (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                broadcast_id VARCHAR(36) NOT NULL,
+                role_name VARCHAR(255) NOT NULL,
+                FOREIGN KEY (broadcast_id) REFERENCES broadcasts(id) ON DELETE CASCADE,
+                INDEX (broadcast_id),
+                INDEX (role_name)
+            )
+        `;
+
+        const createBroadcastReceiptsTable = `
+            CREATE TABLE IF NOT EXISTS broadcast_receipts (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                broadcast_id VARCHAR(36) NOT NULL,
+                user_id VARCHAR(36) NOT NULL,
+                status ENUM('Read', 'Unread') NOT NULL DEFAULT 'Unread',
+                read_at TIMESTAMP NULL,
+                FOREIGN KEY (broadcast_id) REFERENCES broadcasts(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                UNIQUE KEY (broadcast_id, user_id),
+                INDEX (broadcast_id),
+                INDEX (user_id)
+            )
+        `;
+
         await connection.query(createUsersTable);
         console.log("Users table created");
 
@@ -342,6 +393,18 @@ async function initializeDatabase() {
 
         await connection.query(createAssignmentsTable);
         console.log("Assignments table created");
+
+        await connection.query(createBroadcastsTable);
+        console.log("Broadcasts table created");
+
+        await connection.query(createBroadcastTagsTable);
+        console.log("Broadcast_tags table created");
+
+        await connection.query(createBroadcastCCTable);
+        console.log("Broadcast_cc table created");
+
+        await connection.query(createBroadcastReceiptsTable);
+        console.log("Broadcast_receipts table created");
 
         const roles = ['NewStudent', 'Student', 'Teacher', 'Parent', 'Admin', 'SuperAdmin', 'NonTeachingStaff'];
         for (const role of roles) {

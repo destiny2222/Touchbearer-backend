@@ -21,6 +21,7 @@ app.use('/api/parents', require('./routes/parents'));
 app.use('/api/students', require('./routes/students'));
 app.use('/api/timetables', require('./routes/timetables'));
 app.use('/api/assignments', require('./routes/assignments'));
+app.use('/api/broadcasts', require('./routes/broadcasts'));
 
 app.get('/', (req, res) => {
     res.json({ message: 'Hello World!' });

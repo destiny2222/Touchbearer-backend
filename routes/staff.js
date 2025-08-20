@@ -7,6 +7,53 @@ const auth = require('../middleware/auth');
 const authorize = require('../middleware/authorize');
 const validateStaffData = require('../middleware/validateStaff');
 
+async function getClassFullDetails(classId, connection) {
+    // 1. Fetch basic class details and teacher info
+    const [classInfo] = await connection.query(`
+        SELECT c.*, s.name as teacher_name, s.email as teacher_email, s.phone as teacher_phone
+        FROM classes c
+        LEFT JOIN staff s ON c.teacher_id = s.id
+        WHERE c.id = ?
+    `, [classId]);
+
+    if (classInfo.length === 0) {
+        return null;
+    }
+
+    // 2. Fetch all students in the class
+    const [students] = await connection.query(`
+        SELECT id, user_id, first_name, last_name, passport
+        FROM students 
+        WHERE class_id = ?
+    `, [classId]);
+
+    // 3. Fetch upcoming assignments for the class
+    const [assignments] = await connection.query(`
+        SELECT id, title, subject, due_date
+        FROM assignments 
+        WHERE class_id = ? AND due_date >= CURDATE()
+        ORDER BY due_date ASC
+    `, [classId]);
+
+    // 4. Fetch the timetable for the class
+    const [timetable] = await connection.query(`
+        SELECT timetable_data
+        FROM timetables
+        WHERE class_id = ?
+    `, [classId]);
+
+    const result = {
+        ...classInfo[0],
+        students,
+        assignments,
+        timetable: timetable.length > 0 ? timetable[0].timetable_data : null,
+        total_student: students.length
+    };
+
+    return result;
+}
+
+
 function generatePassword() {
     const length = 10;
     const charset = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$';
@@ -896,6 +943,78 @@ router.get('/status/:status', auth, async (req, res) => {
             success: false,
             message: 'Server error while fetching staff members'
         });
+    }
+});
+
+router.get('/:id/full-details', auth, async (req, res) => {
+    const { id } = req.params;
+    const connection = await pool.getConnection();
+
+    try {
+        await connection.beginTransaction();
+
+        const [staff] = await connection.query(`
+            SELECT 
+                s.*,
+                r.name as role,
+                b.school_name as branch
+            FROM staff s
+            JOIN roles r ON s.role_id = r.id
+            JOIN branches b ON s.branch_id = b.id
+            WHERE s.id = ?
+        `, [id]);
+
+        if (staff.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ success: false, message: 'Staff member not found.' });
+        }
+
+        const teacher = staff[0];
+
+        // Authorization check
+        const isSuperAdmin = req.user.roles.includes('SuperAdmin');
+        const isOwner = teacher.user_id === req.user.id;
+        let isAdminInSameBranch = false;
+
+        if (req.user.roles.includes('Admin')) {
+            const [adminStaff] = await connection.query('SELECT branch_id FROM staff WHERE user_id = ?', [req.user.id]);
+            if (adminStaff.length > 0 && adminStaff[0].branch_id === teacher.branch_id) {
+                isAdminInSameBranch = true;
+            }
+        }
+
+        if (!isSuperAdmin && !isOwner && !isAdminInSameBranch) {
+            await connection.rollback();
+            return res.status(403).json({ success: false, message: 'You are not authorized to view these details.' });
+        }
+
+
+        const [classes] = await connection.query('SELECT id FROM classes WHERE teacher_id = ?', [id]);
+
+        const classDetails = [];
+        for (const c of classes) {
+            const details = await getClassFullDetails(c.id, connection);
+            if (details) {
+                classDetails.push(details);
+            }
+        }
+
+        await connection.commit();
+
+        const result = {
+            ...teacher,
+            classes: classDetails
+        };
+
+        res.status(200).json({ success: true, data: result });
+
+
+    } catch (error) {
+        await connection.rollback();
+        console.error('Error fetching full teacher details:', error);
+        res.status(500).json({ success: false, message: 'Server error while fetching teacher details.' });
+    } finally {
+        connection.release();
     }
 });
 
