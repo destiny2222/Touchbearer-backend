@@ -23,6 +23,7 @@ app.use('/api/timetables', require('./routes/timetables'));
 app.use('/api/assignments', require('./routes/assignments'));
 app.use('/api/broadcasts', require('./routes/broadcasts'));
 app.use('/api/attendance', require('./routes/attendance'));
+app.use('/api/bookshop', require('./routes/bookshop'));
 
 app.get('/', (req, res) => {
     res.json({ message: 'Hello World!' });
