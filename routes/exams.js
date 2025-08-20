@@ -281,6 +281,132 @@ router.get('/class', [auth, authorize(['Teacher'])], async (req, res) => {
 });
 
 
+// @route   GET /api/exams/upcoming
+// @desc    Get all upcoming exams' details publicly
+// @access  Public
+router.get('/upcoming', async (req, res) => {
+    try {
+        const query = `
+            SELECT
+                e.title,
+                e.exam_date_time AS date,
+                c.name AS class,
+                b.school_name as branch,
+                GROUP_CONCAT(s.title) AS subjects
+            FROM exams e
+            JOIN classes c ON e.class_id = c.id
+            JOIN branches b ON e.branch_id = b.id
+            LEFT JOIN subjects s ON e.id = s.exam_id
+            WHERE e.exam_date_time > NOW()
+            GROUP BY e.id, e.title, e.exam_date_time, c.name, b.school_name
+            ORDER BY e.exam_date_time ASC;
+        `;
+
+        const [exams] = await pool.query(query);
+
+        const upcomingExams = exams.map(exam => ({
+            ...exam,
+            subjects: exam.subjects ? exam.subjects.split(',') : []
+        }));
+
+        res.json({ success: true, data: upcomingExams });
+
+    } catch (err) {
+        console.error('Error fetching upcoming exams:', err);
+        res.status(500).json({ success: false, message: 'Server error while fetching upcoming exams.' });
+    }
+});
+
+
+// @route   GET /api/exams/me/upcoming
+// @desc    Get upcoming exams for the authenticated user (student, parent, or teacher)
+// @access  Private (Student, NewStudent, Parent, Teacher)
+router.get('/me/upcoming', auth, authorize(['Student', 'NewStudent', 'Parent', 'Teacher']), async (req, res) => {
+    const { id: userId, roles } = req.user;
+    const connection = await pool.getConnection();
+
+    try {
+        const classIds = new Set();
+
+        if (roles.includes('Teacher')) {
+            const [staff] = await connection.query('SELECT id FROM staff WHERE user_id = ?', [userId]);
+            if (staff.length > 0) {
+                const teacherId = staff[0].id;
+                const [classes] = await connection.query('SELECT id FROM classes WHERE teacher_id = ?', [teacherId]);
+                classes.forEach(c => classIds.add(c.id));
+            }
+        }
+
+        if (roles.includes('Parent')) {
+            const [parents] = await connection.query('SELECT id FROM parents WHERE user_id = ?', [userId]);
+            if (parents.length > 0) {
+                const parentId = parents[0].id;
+                const [studentClasses] = await connection.query('SELECT class_id FROM students WHERE parent_id = ?', [parentId]);
+                studentClasses.forEach(c => c.class_id && classIds.add(c.class_id));
+
+                const [newStudentClasses] = await connection.query('SELECT class_id FROM new_students WHERE parent_id = ?', [parentId]);
+                newStudentClasses.forEach(c => c.class_id && classIds.add(c.class_id));
+            }
+        }
+
+        if (roles.includes('Student')) {
+            const [students] = await connection.query('SELECT class_id FROM students WHERE user_id = ?', [userId]);
+            if (students.length > 0 && students[0].class_id) {
+                classIds.add(students[0].class_id);
+            }
+        }
+
+        if (roles.includes('NewStudent')) {
+            const [users] = await connection.query('SELECT email FROM users WHERE id = ?', [userId]);
+            if (users.length > 0) {
+                const studentId = users[0].email;
+                const [newStudents] = await connection.query('SELECT class_id FROM new_students WHERE student_id = ?', [studentId]);
+                if (newStudents.length > 0 && newStudents[0].class_id) {
+                    classIds.add(newStudents[0].class_id);
+                }
+            }
+        }
+
+        const uniqueClassIds = [...classIds];
+
+        if (uniqueClassIds.length === 0) {
+            return res.json({ success: true, data: [] });
+        }
+
+        const query = `
+            SELECT
+                e.title,
+                e.exam_date_time AS date,
+                c.name AS class,
+                b.school_name as branch,
+                GROUP_CONCAT(s.title) AS subjects
+            FROM exams e
+            JOIN classes c ON e.class_id = c.id
+            JOIN branches b ON e.branch_id = b.id
+            LEFT JOIN subjects s ON e.id = s.exam_id
+            WHERE e.exam_date_time > NOW() AND e.class_id IN (?)
+            GROUP BY e.id, e.title, e.exam_date_time, c.name, b.school_name
+            ORDER BY e.exam_date_time ASC;
+        `;
+
+        const [exams] = await connection.query(query, [uniqueClassIds]);
+
+        const upcomingExams = exams.map(exam => ({
+            ...exam,
+            subjects: exam.subjects ? exam.subjects.split(',') : []
+        }));
+
+        res.json({ success: true, data: upcomingExams });
+
+    } catch (err) {
+        console.error('Error fetching scoped upcoming exams:', err);
+        res.status(500).json({ success: false, message: 'Server error while fetching upcoming exams.' });
+    } finally {
+        connection.release();
+    }
+});
+
+
 // --- CBT Student Facing Endpoints ---
 
 // @route   GET /api/exams/subjects

@@ -35,9 +35,9 @@ If the user does not meet any of these criteria, the server will respond with a 
 
 ### Headers
 
-| Header          | Value                 | Description                                        |
-| :-------------- | :-------------------- | :------------------------------------------------- |
-| `Authorization` | `Bearer <your_token>` | **Required.** The JWT for authenticating the user. |
+| Header         | Value          | Description                                        |
+| :------------- | :------------- | :------------------------------------------------- |
+| `x-auth-token` | `<your_token>` | **Required.** The JWT for authenticating the user. |
 
 ---
 
@@ -147,7 +147,7 @@ async function getStaffDetails(staffId, token) {
         method: "GET",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`,
+          "x-auth-token": token,
         },
       }
     );
