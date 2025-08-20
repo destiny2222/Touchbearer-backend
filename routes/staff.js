@@ -974,16 +974,16 @@ router.get('/:id/full-details', auth, async (req, res) => {
         // Authorization check
         const isSuperAdmin = req.user.roles.includes('SuperAdmin');
         const isOwner = teacher.user_id === req.user.id;
-        let isAdminInSameBranch = false;
+        let isPrivilegedStaffInSameBranch = false;
 
-        if (req.user.roles.includes('Admin')) {
-            const [adminStaff] = await connection.query('SELECT branch_id FROM staff WHERE user_id = ?', [req.user.id]);
-            if (adminStaff.length > 0 && adminStaff[0].branch_id === teacher.branch_id) {
-                isAdminInSameBranch = true;
+        if (req.user.roles.includes('Admin') || req.user.roles.includes('Teacher')) {
+            const [requestingStaff] = await connection.query('SELECT branch_id FROM staff WHERE user_id = ?', [req.user.id]);
+            if (requestingStaff.length > 0 && requestingStaff[0].branch_id === teacher.branch_id) {
+                isPrivilegedStaffInSameBranch = true;
             }
         }
 
-        if (!isSuperAdmin && !isOwner && !isAdminInSameBranch) {
+        if (!isSuperAdmin && !isOwner && !isPrivilegedStaffInSameBranch) {
             await connection.rollback();
             return res.status(403).json({ success: false, message: 'You are not authorized to view these details.' });
         }

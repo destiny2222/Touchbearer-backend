@@ -64,25 +64,28 @@ router.post('/login', async (req, res) => {
             return res.status(400).json({ message: 'Invalid credentials' });
         }
 
-        let roles = cache.get(user.id);
-        if (!roles) {
-            const [rolesResult] = await pool.query('SELECT r.name FROM roles r JOIN user_roles ur ON r.id = ur.role_id WHERE ur.user_id = ?', [user.id]);
-            roles = rolesResult.map(r => r.name);
-            cache.put(user.id, roles, 6000000); // Cache for 100 minutes
+        let userRoles = cache.get(user.id);
+        if (!userRoles || (userRoles.length > 0 && typeof userRoles[0] === 'string')) {
+            const [rolesResult] = await pool.query('SELECT r.id, r.name FROM roles r JOIN user_roles ur ON r.id = ur.role_id WHERE ur.user_id = ?', [user.id]);
+            userRoles = rolesResult;
+            cache.put(user.id, userRoles, 6000000); // Cache for 100 minutes
         }
 
+        const roles = userRoles.map(r => r.name);
         const token = jwt.sign({ id: user.id, roles }, process.env.JWT_SECRET, { expiresIn: '7d' });
 
         if (roles.includes('SuperAdmin')) {
             const [superAdminResult] = await pool.query('SELECT * FROM super_admins WHERE user_id = ?', [user.id]);
             const superAdmin = superAdminResult[0];
+            const superAdminRole = userRoles.find(r => r.name === 'SuperAdmin');
             res.json({
                 admin: {
                     id: superAdmin.id,
                     name: superAdmin.name,
                     email: user.email,
                     phone: superAdmin.phone,
-                    image: superAdmin.image
+                    image: superAdmin.image,
+                    roleId: superAdminRole.id
                 },
                 token,
                 message: 'Login successful'
@@ -131,7 +134,7 @@ router.post('/login/staff', async (req, res) => {
         const [staffResult] = await pool.query(staffQuery, [user.id]);
 
         if (staffResult.length === 0) {
-            return res.status(403).json({ message: 'Access denied. Not a staff account.' });
+            return res.status(403).json({ message: 'Invalid credentials' });
         }
 
         let roles = cache.get(user.id);
@@ -183,7 +186,7 @@ router.post('/login/cbt/student', async (req, res) => {
         const roles = userRoles.map(r => r.name);
 
         if (!roles.includes('NewStudent')) {
-            return res.status(403).json({ success: false, message: 'Access denied. This login is for new students taking an entrance exam.' });
+            return res.status(403).json({ success: false, message: 'Invalid credentials' });
         }
 
         const [studentDetailsResult] = await pool.query(
@@ -198,7 +201,7 @@ router.post('/login/cbt/student', async (req, res) => {
         );
 
         if (studentDetailsResult.length === 0) {
-            return res.status(404).json({ success: false, message: 'Student enrollment details not found.' });
+            return res.status(404).json({ success: false, message: 'Invalid credentials' });
         }
 
         const token = jwt.sign({ id: user.id, roles }, process.env.JWT_SECRET, { expiresIn: '1d' });
@@ -240,7 +243,7 @@ router.post('/student/login', async (req, res) => {
         const userRoles = rolesResult.map(r => r.name);
 
         if (!userRoles.includes('Student') && !userRoles.includes('NewStudent')) {
-            return res.status(403).json({ success: false, message: 'Access denied. Not a student account.' });
+            return res.status(403).json({ success: false, message: 'Invalid credentials' });
         }
 
         let studentData;
@@ -253,7 +256,7 @@ router.post('/student/login', async (req, res) => {
         }
 
         if (!studentData) {
-            return res.status(404).json({ success: false, message: 'Could not find student profile.' });
+            return res.status(404).json({ success: false, message: 'Invalid credentials' });
         }
 
         const payload = { id: user.id, roles: userRoles };
