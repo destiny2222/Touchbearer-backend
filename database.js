@@ -340,6 +340,34 @@ async function initializeDatabase() {
             )
         `;
 
+        const createStaffAttendanceTable = `
+            CREATE TABLE IF NOT EXISTS staff_attendance (
+                id VARCHAR(36) PRIMARY KEY,
+                staff_id VARCHAR(36) NOT NULL,
+                branch_id VARCHAR(36) NOT NULL,
+                date DATE NOT NULL,
+                status ENUM('Present', 'Absent', 'Leave') NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (staff_id) REFERENCES staff(id) ON DELETE CASCADE,
+                FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE
+            )
+        `;
+
+        const createStudentAttendanceTable = `
+            CREATE TABLE IF NOT EXISTS student_attendance (
+                id VARCHAR(36) PRIMARY KEY,
+                student_id VARCHAR(36) NOT NULL,
+                class_id VARCHAR(36) NOT NULL,
+                branch_id VARCHAR(36) NOT NULL,
+                date DATE NOT NULL,
+                status ENUM('Present', 'Absent', 'Leave') NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
+                FOREIGN KEY (class_id) REFERENCES classes(id) ON DELETE CASCADE,
+                FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE
+            )
+        `;
+
         await connection.query(createUsersTable);
         console.log("Users table created");
 
@@ -405,6 +433,12 @@ async function initializeDatabase() {
 
         await connection.query(createBroadcastReceiptsTable);
         console.log("Broadcast_receipts table created");
+
+        await connection.query(createStaffAttendanceTable);
+        console.log("Staff attendance table created");
+
+        await connection.query(createStudentAttendanceTable);
+        console.log("Student attendance table created");
 
         const roles = ['NewStudent', 'Student', 'Teacher', 'Parent', 'Admin', 'SuperAdmin', 'NonTeachingStaff'];
         for (const role of roles) {
