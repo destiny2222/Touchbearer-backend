@@ -249,6 +249,63 @@ router.get('/wards-summary', [auth, authorize(['Parent'])], async (req, res) => 
 // End of moved block
 // ===================================================================
 
+// @route   GET /api/parents/wards/results
+// @desc    Get all published results for all of the parent's children for the current term
+// @access  Parent
+router.get('/wards/results', [auth, authorize(['Parent'])], async (req, res) => {
+    try {
+        const [parent] = await pool.query('SELECT id FROM parents WHERE user_id = ?', [req.user.id]);
+        if (parent.length === 0) {
+            return res.status(404).json({ success: false, message: 'Parent not found.' });
+        }
+        const parentId = parent[0].id;
+
+        const [children] = await pool.query('SELECT user_id, branch_id FROM students WHERE parent_id = ?', [parentId]);
+        if (children.length === 0) {
+            return res.json({ success: true, data: [] });
+        }
+
+        const branch_id = children[0].branch_id;
+        const children_user_ids = children.map(c => c.user_id);
+
+        const [terms] = await pool.query('SELECT id FROM terms WHERE branch_id = ? AND is_active = TRUE', [branch_id]);
+        if (terms.length === 0) {
+            // Fallback to global term if no branch-specific term is active
+            const [globalTerms] = await pool.query('SELECT id FROM terms WHERE branch_id IS NULL AND is_active = TRUE');
+            if (globalTerms.length === 0) {
+                return res.status(404).json({ success: false, message: 'No active term found.' });
+            }
+            terms.push(globalTerms[0]);
+        }
+        const term_id = terms[0].id;
+
+        const query = `
+            SELECT
+                er.id,
+                er.score,
+                er.total_questions,
+                er.answered_questions,
+                er.submitted_at,
+                e.title as exam_title,
+                e.exam_date_time,
+                s.first_name,
+                s.last_name
+            FROM exam_results er
+            JOIN exams e ON er.exam_id = e.id
+            JOIN students s ON er.student_id = s.user_id
+            WHERE er.student_id IN (?) AND er.published = TRUE AND er.term_id = ?
+            ORDER BY s.last_name, s.first_name, e.exam_date_time DESC
+        `;
+
+        const [results] = await pool.query(query, [children_user_ids, term_id]);
+        res.json({ success: true, data: results });
+
+    } catch (err) {
+        console.error('Error fetching children exam results:', err);
+        res.status(500).json({ success: false, message: 'Server error while fetching exam results.' });
+    }
+});
+
 router.get('/:id', [auth, authorize(['SuperAdmin', 'Admin'])], async (req, res) => {
     const { id } = req.params;
     try {

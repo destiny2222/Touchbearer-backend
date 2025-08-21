@@ -527,6 +527,14 @@ router.post('/answers', [auth, authorize(['Student', 'NewStudent'])], async (req
         const [subject] = await connection.query('SELECT exam_id FROM subjects WHERE id = ?', [questions[0].subject_id]);
         const exam_id = subject[0].exam_id;
 
+        // Get the branch_id from the exam
+        const [exam] = await connection.query('SELECT branch_id FROM exams WHERE id = ?', [exam_id]);
+        const branch_id = exam[0].branch_id;
+
+        // Get the current active term for the branch
+        const [terms] = await connection.query('SELECT id FROM terms WHERE branch_id = ? AND is_active = TRUE', [branch_id]);
+        const term_id = terms.length > 0 ? terms[0].id : null;
+
         const [existingResult] = await connection.query('SELECT id FROM exam_results WHERE exam_id = ? AND student_id = ?', [exam_id, student_id]);
         if (existingResult.length > 0) {
             await connection.rollback();
@@ -548,6 +556,7 @@ router.post('/answers', [auth, authorize(['Student', 'NewStudent'])], async (req
             id: uuidv4(),
             exam_id,
             student_id,
+            term_id,
             score: (score / total_questions) * 100,
             total_questions,
             answered_questions: answers.length,
@@ -565,6 +574,161 @@ router.post('/answers', [auth, authorize(['Student', 'NewStudent'])], async (req
         res.status(500).json({ success: false, message: 'Server error while submitting answers.' });
     } finally {
         connection.release();
+    }
+});
+
+// @route   GET /api/exams/:examId/results
+// @desc    Get all results for a specific exam
+// @access  Admin, SuperAdmin
+router.get('/:examId/results', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => {
+    const { examId } = req.params;
+
+    try {
+        const [exam] = await pool.query('SELECT branch_id FROM exams WHERE id = ?', [examId]);
+        if (exam.length === 0) {
+            return res.status(404).json({ success: false, message: 'Exam not found.' });
+        }
+
+        if (req.user.roles.includes('Admin')) {
+            const [adminStaff] = await pool.query('SELECT branch_id FROM staff WHERE user_id = ?', [req.user.id]);
+            if (adminStaff.length === 0 || adminStaff[0].branch_id !== exam[0].branch_id) {
+                return res.status(403).json({ success: false, message: 'You are not authorized to view results for this exam.' });
+            }
+        }
+
+        const query = `
+            SELECT
+                er.id,
+                er.score,
+                er.total_questions,
+                er.answered_questions,
+                er.submitted_at,
+                er.published,
+                s.first_name,
+                s.last_name
+            FROM exam_results er
+            JOIN users u ON er.student_id = u.id
+            JOIN students s ON u.id = s.user_id
+            WHERE er.exam_id = ?
+        `;
+
+        const [results] = await pool.query(query, [examId]);
+        res.json({ success: true, data: results });
+
+    } catch (err) {
+        console.error('Error fetching exam results:', err);
+        res.status(500).json({ success: false, message: 'Server error while fetching exam results.' });
+    }
+});
+
+// @route   GET /api/exams/:examId/results/teacher
+// @desc    Get all results for a specific exam for the teacher's class
+// @access  Teacher
+router.get('/:examId/results/teacher', [auth, authorize(['Teacher'])], async (req, res) => {
+    const { examId } = req.params;
+
+    try {
+        const [staff] = await pool.query('SELECT class_id FROM staff WHERE user_id = ?', [req.user.id]);
+        if (staff.length === 0 || !staff[0].class_id) {
+            return res.status(403).json({ success: false, message: 'You are not assigned to a class.' });
+        }
+        const teacherClassId = staff[0].class_id;
+
+        const query = `
+            SELECT
+                er.id,
+                er.score,
+                er.total_questions,
+                er.answered_questions,
+                er.submitted_at,
+                er.published,
+                s.first_name,
+                s.last_name
+            FROM exam_results er
+            JOIN users u ON er.student_id = u.id
+            JOIN students s ON u.id = s.user_id
+            WHERE er.exam_id = ? AND s.class_id = ?
+        `;
+
+        const [results] = await pool.query(query, [examId, teacherClassId]);
+        res.json({ success: true, data: results });
+
+    } catch (err) {
+        console.error('Error fetching exam results for teacher:', err);
+        res.status(500).json({ success: false, message: 'Server error while fetching exam results.' });
+    }
+});
+
+// @route   PUT /api/exams/results/publish
+// @desc    Publish results for a specific exam for the teacher's class
+// @access  Teacher
+router.put('/results/publish', [auth, authorize(['Teacher'])], async (req, res) => {
+    const { exam_id, class_id } = req.body;
+
+    try {
+        const [staff] = await pool.query('SELECT class_id FROM staff WHERE user_id = ?', [req.user.id]);
+        if (staff.length === 0 || staff[0].class_id !== class_id) {
+            return res.status(403).json({ success: false, message: 'You are not authorized to publish results for this class.' });
+        }
+
+        const updateQuery = `
+            UPDATE exam_results
+            SET
+                published = TRUE,
+                published_by = ?,
+                published_at = NOW()
+            WHERE exam_id = ? AND student_id IN (
+                SELECT user_id FROM students WHERE class_id = ?
+            )
+        `;
+
+        await pool.query(updateQuery, [req.user.id, exam_id, class_id]);
+        res.json({ success: true, message: 'Results published successfully.' });
+
+    } catch (err) {
+        console.error('Error publishing exam results:', err);
+        res.status(500).json({ success: false, message: 'Server error while publishing exam results.' });
+    }
+});
+
+// @route   GET /api/exams/results/me
+// @desc    Get the authenticated student's own published results for the current term
+// @access  Student
+router.get('/results/me', [auth, authorize(['Student'])], async (req, res) => {
+    try {
+        const [student] = await pool.query('SELECT branch_id FROM students WHERE user_id = ?', [req.user.id]);
+        if (student.length === 0) {
+            return res.status(404).json({ success: false, message: 'Student not found.' });
+        }
+        const branch_id = student[0].branch_id;
+
+        const [terms] = await pool.query('SELECT id FROM terms WHERE branch_id = ? AND is_active = TRUE', [branch_id]);
+        if (terms.length === 0) {
+            return res.status(404).json({ success: false, message: 'No active term found for your branch.' });
+        }
+        const term_id = terms[0].id;
+
+        const query = `
+            SELECT
+                er.id,
+                er.score,
+                er.total_questions,
+                er.answered_questions,
+                er.submitted_at,
+                e.title as exam_title,
+                e.exam_date_time
+            FROM exam_results er
+            JOIN exams e ON er.exam_id = e.id
+            WHERE er.student_id = ? AND er.published = TRUE AND er.term_id = ?
+            ORDER BY e.exam_date_time DESC
+        `;
+
+        const [results] = await pool.query(query, [req.user.id, term_id]);
+        res.json({ success: true, data: results });
+
+    } catch (err) {
+        console.error('Error fetching student exam results:', err);
+        res.status(500).json({ success: false, message: 'Server error while fetching exam results.' });
     }
 });
 

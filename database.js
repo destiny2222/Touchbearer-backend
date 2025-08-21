@@ -265,13 +265,19 @@ async function initializeDatabase() {
                 id VARCHAR(36) PRIMARY KEY,
                 exam_id VARCHAR(36) NOT NULL,
                 student_id VARCHAR(36) NOT NULL,
+                term_id VARCHAR(36),
                 score DECIMAL(5, 2) NOT NULL,
                 total_questions INT NOT NULL,
                 answered_questions INT NOT NULL,
                 answers JSON,
                 submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                published BOOLEAN DEFAULT FALSE,
+                published_by VARCHAR(36),
+                published_at TIMESTAMP NULL,
                 FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE,
-                FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE
+                FOREIGN KEY (student_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (term_id) REFERENCES terms(id) ON DELETE SET NULL,
+                FOREIGN KEY (published_by) REFERENCES users(id) ON DELETE SET NULL
             )
         `;
 
