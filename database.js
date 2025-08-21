@@ -399,6 +399,61 @@ async function initializeDatabase() {
             )
         `;
 
+        const createTermsTable = `
+            CREATE TABLE IF NOT EXISTS terms (
+                id VARCHAR(36) PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                branch_id VARCHAR(36),
+                start_date DATE NOT NULL,
+                end_date DATE NOT NULL,
+                is_active BOOLEAN DEFAULT FALSE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE
+            )
+        `;
+
+        const createFeesTable = `
+            CREATE TABLE IF NOT EXISTS fees (
+                id VARCHAR(36) PRIMARY KEY,
+                branch_id VARCHAR(36) NOT NULL,
+                class_id VARCHAR(36) NOT NULL,
+                term_id VARCHAR(36) NOT NULL,
+                name VARCHAR(255) NOT NULL,
+                amount DECIMAL(10, 2) NOT NULL,
+                description VARCHAR(255),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE,
+                FOREIGN KEY (class_id) REFERENCES classes(id) ON DELETE CASCADE,
+                FOREIGN KEY (term_id) REFERENCES terms(id) ON DELETE CASCADE
+            )
+        `;
+
+        const createPaymentsTable = `
+            CREATE TABLE IF NOT EXISTS payments (
+                id VARCHAR(36) PRIMARY KEY,
+                student_id VARCHAR(36) NOT NULL,
+                term_id VARCHAR(36) NOT NULL,
+                amount_paid DECIMAL(10, 2) NOT NULL,
+                payment_date DATE NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
+                FOREIGN KEY (term_id) REFERENCES terms(id) ON DELETE CASCADE
+            )
+        `;
+
+        const createStudentPaymentStatusTable = `
+            CREATE TABLE IF NOT EXISTS student_payment_statuses (
+                student_id VARCHAR(36) NOT NULL,
+                term_id VARCHAR(36) NOT NULL,
+                status ENUM('Paid', 'Not Paid') NOT NULL DEFAULT 'Not Paid',
+                PRIMARY KEY (student_id, term_id),
+                FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
+                FOREIGN KEY (term_id) REFERENCES terms(id) ON DELETE CASCADE
+            )
+        `;
+
         await connection.query(createUsersTable);
         console.log("Users table created");
 
@@ -476,6 +531,18 @@ async function initializeDatabase() {
 
         await connection.query(createStudentBookPurchasesTable);
         console.log("Student book purchases table created");
+
+        await connection.query(createTermsTable);
+        console.log("Terms table created");
+
+        await connection.query(createFeesTable);
+        console.log("Fees table created");
+
+        await connection.query(createPaymentsTable);
+        console.log("Payments table created");
+
+        await connection.query(createStudentPaymentStatusTable);
+        console.log("Student payment status table created");
 
         const roles = ['NewStudent', 'Student', 'Teacher', 'Parent', 'Admin', 'SuperAdmin', 'NonTeachingStaff'];
         for (const role of roles) {

@@ -45,6 +45,60 @@ router.post('/register', auth, async (req, res) => {
     }
 });
 
+router.post('/parent/login', async (req, res) => {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+        return res.status(400).json({ message: 'Please enter all fields' });
+    }
+
+    try {
+        const [users] = await pool.query('SELECT * FROM users WHERE email = ?', [email]);
+        if (users.length === 0) {
+            return res.status(400).json({ message: 'Invalid credentials' });
+        }
+
+        const user = users[0];
+        const isMatch = await bcrypt.compare(password, user.password);
+        if (!isMatch) {
+            return res.status(400).json({ message: 'Invalid credentials' });
+        }
+
+        const [rolesResult] = await pool.query('SELECT r.name FROM roles r JOIN user_roles ur ON r.id = ur.role_id WHERE ur.user_id = ?', [user.id]);
+        const userRoles = rolesResult.map(r => r.name);
+
+        if (!userRoles.includes('Parent')) {
+            return res.status(403).json({ message: 'Access denied. Not a parent account.' });
+        }
+
+        const [parentResult] = await pool.query('SELECT * FROM parents WHERE user_id = ?', [user.id]);
+        if (parentResult.length === 0) {
+            return res.status(404).json({ message: 'Parent details not found.' });
+        }
+        const parent = parentResult[0];
+
+        const [childrenResult] = await pool.query('SELECT id, first_name, last_name FROM students WHERE parent_id = ?', [parent.id]);
+
+        const token = jwt.sign({ id: user.id, roles: userRoles }, process.env.JWT_SECRET, { expiresIn: '7d' });
+
+        res.json({
+            parent: {
+                id: parent.id,
+                name: parent.name,
+                email: parent.email,
+                phone: parent.phone,
+                children: childrenResult.map(c => ({ id: c.id, name: `${c.first_name} ${c.last_name}` }))
+            },
+            token,
+            message: 'Login successful'
+        });
+
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ message: 'Server error' });
+    }
+});
+
 router.post('/login', async (req, res) => {
     const { email, password } = req.body;
 
