@@ -7,10 +7,14 @@ const authorize = require('../middleware/authorize');
 
 // Create a new book
 router.post('/books', auth, authorize(['SuperAdmin', 'Admin']), async (req, res) => {
-    const { title, author, description, price, cover_image_url, branch_id } = req.body;
+    const { title, author, description, price, cover_image_url, branch_id, amount } = req.body;
 
-    if (!title || !author || !price || !branch_id) {
+    if (!title || !author || !price || !branch_id || amount === undefined) {
         return res.status(400).json({ success: false, message: 'Missing required fields' });
+    }
+
+    if (amount < 0) {
+        return res.status(400).json({ success: false, message: 'Amount cannot be negative' });
     }
 
     try {
@@ -32,6 +36,7 @@ router.post('/books', auth, authorize(['SuperAdmin', 'Admin']), async (req, res)
             description,
             price,
             cover_image_url,
+            amount,
             branch_id,
         };
 
@@ -48,7 +53,7 @@ router.post('/books', auth, authorize(['SuperAdmin', 'Admin']), async (req, res)
 // Update a book
 router.put('/books/:id', auth, authorize(['SuperAdmin', 'Admin']), async (req, res) => {
     const { id } = req.params;
-    const { title, author, description, price, cover_image_url } = req.body;
+    const { title, author, description, price, cover_image_url, amount } = req.body;
 
     try {
         const connection = await pool.getConnection();
@@ -74,6 +79,13 @@ router.put('/books/:id', auth, authorize(['SuperAdmin', 'Admin']), async (req, r
         if (description) updateFields.description = description;
         if (price) updateFields.price = price;
         if (cover_image_url) updateFields.cover_image_url = cover_image_url;
+        if (amount !== undefined) {
+            if (amount < 0) {
+                connection.release();
+                return res.status(400).json({ success: false, message: 'Amount cannot be negative' });
+            }
+            updateFields.amount = amount;
+        }
 
         if (Object.keys(updateFields).length > 0) {
             await connection.query('UPDATE books SET ? WHERE id = ?', [updateFields, id]);
@@ -159,6 +171,12 @@ router.post('/purchase', auth, authorize(['Student']), async (req, res) => {
             return res.status(403).json({ success: false, message: 'You can only purchase books from your own branch.' });
         }
 
+        // Check if book is available
+        if (book[0].amount <= 0) {
+            connection.release();
+            return res.status(400).json({ success: false, message: 'Book is out of stock' });
+        }
+
         const newPurchase = {
             id: uuidv4(),
             student_id: studentId,
@@ -169,6 +187,10 @@ router.post('/purchase', auth, authorize(['Student']), async (req, res) => {
         };
 
         await connection.query('INSERT INTO student_book_purchases SET ?', newPurchase);
+
+        // Decrease the book amount
+        await connection.query('UPDATE books SET amount = amount - 1 WHERE id = ?', [book_id]);
+
         connection.release();
 
         res.status(201).json({ success: true, message: 'Book purchased successfully', data: newPurchase });

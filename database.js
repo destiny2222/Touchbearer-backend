@@ -143,6 +143,24 @@ async function initializeDatabase() {
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         `;
+        
+        const createRevenueTable = `
+            CREATE TABLE IF NOT EXISTS revenue (
+                id VARCHAR(36) PRIMARY KEY,
+                student_id VARCHAR(36),
+                parent_id VARCHAR(36),
+                email VARCHAR(255) NOT NULL,
+                amount DECIMAL(10, 2) NOT NULL,
+                reference VARCHAR(255) NOT NULL UNIQUE,
+                status VARCHAR(50) NOT NULL,
+                payment_for VARCHAR(100) NOT NULL,
+                paid_at TIMESTAMP NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE SET NULL,
+                FOREIGN KEY (parent_id) REFERENCES parents(id) ON DELETE SET NULL
+            )
+        `;
+
 
         const createExpensesTable = `
             CREATE TABLE IF NOT EXISTS expenses (
@@ -377,6 +395,7 @@ async function initializeDatabase() {
                 description TEXT,
                 price DECIMAL(10, 2) NOT NULL,
                 cover_image_url VARCHAR(255),
+                amount INT NOT NULL DEFAULT 0,
                 branch_id VARCHAR(36) NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -543,6 +562,9 @@ async function initializeDatabase() {
 
         await connection.query(createStudentPaymentStatusTable);
         console.log("Student payment status table created");
+        
+        await connection.query(createRevenueTable);
+        console.log("Revenue table created");
 
         const roles = ['NewStudent', 'Student', 'Teacher', 'Parent', 'Admin', 'SuperAdmin', 'NonTeachingStaff'];
         for (const role of roles) {

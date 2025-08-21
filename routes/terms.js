@@ -10,6 +10,32 @@ async function getAdminBranchId(userId) {
     return rows.length > 0 ? rows[0].branch_id : null;
 }
 
+// GET /api/terms - Get all terms
+router.get('/', auth, async (req, res) => {
+    try {
+        // Scoping for Admins to see only their branch's terms
+        let query = 'SELECT * FROM terms';
+        const queryParams = [];
+
+        if (req.user.roles.includes('Admin')) {
+            const [adminStaff] = await pool.query('SELECT branch_id FROM staff WHERE user_id = ?', [req.user.id]);
+            if (adminStaff.length > 0 && adminStaff[0].branch_id) {
+                query += ' WHERE branch_id = ?';
+                queryParams.push(adminStaff[0].branch_id);
+            }
+        }
+
+        query += ' ORDER BY start_date DESC'; // Show newest first
+
+        const [terms] = await pool.query(query, queryParams);
+        res.json({ success: true, data: terms });
+
+    } catch (error) {
+        console.error('Get all terms error:', error);
+        res.status(500).json({ success: false, message: 'Server error while retrieving terms.' });
+    }
+});
+
 // POST /api/terms/new - Trigger a new term (reset payment statuses but keep history)
 router.post('/new', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => {
     const { name, start_date, end_date, branch_id } = req.body; // branch_id is optional
@@ -79,6 +105,59 @@ router.post('/new', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res)
         res.status(500).json({ success: false, message: 'Server error while creating new term.' });
     } finally {
         connection.release();
+    }
+});
+
+// GET /api/terms/current - Get the current active term
+router.get('/current', auth, async (req, res) => {
+    try {
+        let query = 'SELECT * FROM terms WHERE is_active = TRUE';
+        const queryParams = [];
+
+        // If user is Admin, get term for their branch only
+        if (req.user.roles.includes('Admin')) {
+            const adminBranchId = await getAdminBranchId(req.user.id);
+            if (!adminBranchId) {
+                return res.status(403).json({ success: false, message: 'Admin is not associated with any branch.' });
+            }
+            query += ' AND branch_id = ?';
+            queryParams.push(adminBranchId);
+        } else if (req.user.roles.includes('SuperAdmin')) {
+            // SuperAdmin can get any term, but prioritize global terms first
+            query += ' ORDER BY CASE WHEN branch_id IS NULL THEN 0 ELSE 1 END, created_at DESC';
+        } else {
+            // For other roles, get the term for their associated branch
+            const [userBranch] = await pool.query(`
+                SELECT branch_id FROM students WHERE user_id = ?
+                UNION
+                SELECT branch_id FROM staff WHERE user_id = ?
+            `, [req.user.id, req.user.id]);
+
+            if (userBranch.length > 0) {
+                query += ' AND branch_id = ?';
+                queryParams.push(userBranch[0].branch_id);
+            } else {
+                // If no branch association, get global terms
+                query += ' AND branch_id IS NULL';
+            }
+        }
+
+        const [terms] = await pool.query(query, queryParams);
+
+        if (terms.length === 0) {
+            return res.status(404).json({ success: false, message: 'No active term found.' });
+        }
+
+        // Return the first (most relevant) term
+        const currentTerm = terms[0];
+
+        res.json({
+            success: true,
+            data: currentTerm
+        });
+    } catch (error) {
+        console.error('Get current term error:', error);
+        res.status(500).json({ success: false, message: 'Server error while retrieving current term.' });
     }
 });
 

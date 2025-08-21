@@ -12,6 +12,7 @@
   "author": "clement",
   "license": "ISC",
   "dependencies": {
+    "@paystack/inline-js": "^2.22.7",
     "axios": "^1.11.0",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",

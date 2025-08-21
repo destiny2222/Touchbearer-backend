@@ -147,5 +147,87 @@ router.get('/children', [auth, authorize(['Parent'])], async (req, res) => {
     }
 });
 
+// GET /api/fees - Retrieve all fees (for Admin/SuperAdmin)
+router.get('/', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => {
+    try {
+        let query = `
+            SELECT 
+                f.id, f.name, f.amount, f.description, 
+                f.branch_id, f.class_id, f.term_id,
+                b.school_name as BranchName,
+                c.name as ClassName,
+                t.name as TermName
+            FROM fees f
+            JOIN branches b ON f.branch_id = b.id
+            JOIN classes c ON f.class_id = c.id
+            JOIN terms t ON f.term_id = t.id
+        `;
+        const queryParams = [];
+
+        // If the user is an Admin, only show fees for their branch
+        if (req.user.roles.includes('Admin')) {
+            const adminBranchId = await getAdminBranchId(req.user.id);
+            if (adminBranchId) {
+                query += ' WHERE f.branch_id = ?';
+                queryParams.push(adminBranchId);
+            } else {
+                // If admin has no branch, return empty array
+                return res.json({ success: true, data: [] });
+            }
+        }
+
+        query += ' ORDER BY f.created_at DESC';
+
+        const [fees] = await pool.query(query, queryParams);
+        res.json({ success: true, data: fees });
+    } catch (error) {
+        console.error('Get all fees error:', error);
+        res.status(500).json({ success: false, message: 'Server error while fetching fees.' });
+    }
+});
+
+// GET /api/payments/student-statuses - Get payment status for all students in the current term
+router.get('/student-statuses', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => {
+    try {
+        let query = `
+            SELECT 
+                s.id,
+                s.first_name,
+                s.last_name,
+                s.branch_id,
+                s.class_id,
+                c.name as ClassName,
+                b.school_name as BranchName,
+                IFNULL(sps.status, 'Not Paid') as payment_status
+            FROM students s
+            JOIN classes c ON s.class_id = c.id
+            JOIN branches b ON s.branch_id = b.id
+            LEFT JOIN terms t ON t.branch_id = s.branch_id AND t.is_active = TRUE
+            LEFT JOIN student_payment_statuses sps ON sps.student_id = s.id AND sps.term_id = t.id
+        `;
+
+        const queryParams = [];
+
+        if (req.user.roles.includes('Admin')) {
+            const adminBranchId = await getAdminBranchId(req.user.id);
+            if (adminBranchId) {
+                query += ' WHERE s.branch_id = ?';
+                queryParams.push(adminBranchId);
+            } else {
+                return res.json({ success: true, data: [] }); // Admin not linked to a branch
+            }
+        }
+
+        query += ' ORDER BY b.school_name, c.name, s.last_name';
+
+        const [students] = await pool.query(query, queryParams);
+        res.json({ success: true, data: students });
+
+    } catch (error) {
+        console.error('Get student payment statuses error:', error);
+        res.status(500).json({ success: false, message: 'Server error while fetching student payment statuses.' });
+    }
+});
+
 
 module.exports = router;

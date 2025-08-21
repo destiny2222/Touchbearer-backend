@@ -1,3 +1,5 @@
+// backend/routes/parents.js
+
 const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
@@ -67,6 +69,185 @@ router.get('/', [auth, authorize(['SuperAdmin', 'Admin'])], async (req, res) => 
         res.status(500).json({ success: false, message: 'Server error while fetching parents.' });
     }
 });
+
+
+// ===================================================================
+// MOVED THIS ENTIRE BLOCK UP
+// This specific route now comes BEFORE the general '/:id' route.
+// ===================================================================
+
+// GET /api/parents/fees-summary - Get a detailed list of all fees for all of a parent's children
+router.get('/fees-summary', [auth, authorize(['Parent'])], async (req, res) => {
+    try {
+        // 1. Get Parent ID
+        const [parentRows] = await pool.query('SELECT id, email FROM parents WHERE user_id = ?', [req.user.id]);
+        if (parentRows.length === 0) {
+            return res.status(404).json({ success: false, message: 'Parent profile not found.' });
+        }
+        const parentId = parentRows[0].id;
+        const parentEmail = parentRows[0].email; // Get email for Paystack
+
+        // 2. Get all children for the parent
+        const [children] = await pool.query(
+            'SELECT id, CONCAT(first_name, " ", last_name) as name, class_id, branch_id FROM students WHERE parent_id = ?', 
+            [parentId]
+        );
+
+        if (children.length === 0) {
+            return res.json({ success: true, data: [] });
+        }
+
+        // 3. Process fees for each child
+        let allFees = [];
+        const today = new Date();
+
+        for (const child of children) {
+            // Find the active term for the child's branch
+            const [activeTermRows] = await pool.query(
+                'SELECT id, name as term_name, end_date FROM terms WHERE is_active = TRUE AND (branch_id = ? OR branch_id IS NULL) ORDER BY branch_id DESC LIMIT 1',
+                [child.branch_id]
+            );
+
+            if (activeTermRows.length === 0) continue; 
+            const activeTerm = activeTermRows[0];
+
+            // Get total fees due and total amount paid for the term
+            const [[{ total_due }]] = await pool.query(
+                'SELECT SUM(amount) as total_due FROM fees WHERE class_id = ? AND term_id = ?',
+                [child.class_id, activeTerm.id]
+            );
+
+            const [[{ total_paid }]] = await pool.query(
+                'SELECT SUM(amount_paid) as total_paid FROM payments WHERE student_id = ? AND term_id = ?',
+                [child.id, activeTerm.id]
+            );
+            
+            const balance = (total_due || 0) - (total_paid || 0);
+
+            // Determine overall status for the term
+            let status = balance <= 0 ? 'Paid' : (new Date(activeTerm.end_date) < today ? 'Overdue' : 'Pending');
+
+            // Get individual fee items for the term
+            const [feeItems] = await pool.query(
+                'SELECT id, name, amount, description FROM fees WHERE class_id = ? AND term_id = ?',
+                [child.class_id, activeTerm.id]
+            );
+            
+            feeItems.forEach(fee => {
+                allFees.push({
+                    id: fee.id,
+                    payment: fee.name,
+                    cost: fee.amount,
+                    for: child.name,
+                    date: activeTerm.end_date,
+                    status: status,
+                    description: fee.description || 'No description provided.',
+                    term: activeTerm.term_name,
+                    totalDueForTerm: total_due || 0,
+                    totalPaidForTerm: total_paid || 0,
+                    termBalance: balance,
+                    studentId: child.id,
+                    termId: activeTerm.id,
+                    parentId: parentId,
+                    parentEmail: parentEmail,
+                });
+            });
+        }
+
+        allFees.sort((a, b) => new Date(a.date) - new Date(b.date));
+        res.json({ success: true, data: allFees });
+
+    } catch (error) {
+        console.error("Error fetching parent's fees summary:", error);
+        res.status(500).json({ success: false, message: "Server error while fetching payment information." });
+    }
+});
+
+router.get('/wards-summary', [auth, authorize(['Parent'])], async (req, res) => {
+    try {
+        // 1. Get the logged-in parent's ID
+        const [parentRows] = await pool.query('SELECT id FROM parents WHERE user_id = ?', [req.user.id]);
+        if (parentRows.length === 0) {
+            return res.status(404).json({ success: false, message: 'Parent profile not found.' });
+        }
+        const parentId = parentRows[0].id;
+
+        // 2. Get all children associated with the parent, along with their class and branch info
+        const [children] = await pool.query(`
+            SELECT 
+                s.id, 
+                s.user_id,
+                CONCAT(s.first_name, ' ', s.last_name) as name,
+                s.class_id,
+                s.branch_id,
+                c.name as className
+            FROM students s
+            JOIN classes c ON s.class_id = c.id
+            WHERE s.parent_id = ?
+        `, [parentId]);
+
+        if (children.length === 0) {
+            return res.json({ success: true, data: [] });
+        }
+
+        // 3. Get yesterday's date in YYYY-MM-DD format for the attendance query
+        const yesterday = new Date();
+        yesterday.setDate(yesterday.getDate() - 1);
+        const yesterdayStr = yesterday.toISOString().split('T')[0];
+
+        // 4. Fetch detailed information for each child
+        const wardsData = await Promise.all(children.map(async (child) => {
+            // --- Fee Status ---
+            let fees = 'Unpaid';
+            // Find the active term for the child's branch, falling back to a global term
+            const [branchTerm] = await pool.query('SELECT id FROM terms WHERE is_active = TRUE AND branch_id = ?', [child.branch_id]);
+            let activeTermId = null;
+            if (branchTerm.length > 0) {
+                activeTermId = branchTerm[0].id;
+            } else {
+                const [globalTerm] = await pool.query('SELECT id FROM terms WHERE is_active = TRUE AND branch_id IS NULL');
+                if (globalTerm.length > 0) activeTermId = globalTerm[0].id;
+            }
+
+            if (activeTermId) {
+                const [paymentStatus] = await pool.query('SELECT status FROM student_payment_statuses WHERE student_id = ? AND term_id = ?', [child.id, activeTermId]);
+                if (paymentStatus.length > 0 && paymentStatus[0].status === 'Paid') {
+                    fees = 'Paid';
+                }
+            }
+
+            // --- Missed Work (Count of past-due assignments for the class) ---
+            const [missedWorkRows] = await pool.query('SELECT COUNT(*) as count FROM assignments WHERE class_id = ? AND due_date < NOW()', [child.class_id]);
+            const missedWork = missedWorkRows[0].count;
+
+            // --- Yesterday's Attendance ---
+            const [attendanceRows] = await pool.query('SELECT status FROM student_attendance WHERE student_id = ? AND date = ?', [child.id, yesterdayStr]);
+            const attendance = attendanceRows.length > 0 ? attendanceRows[0].status : 'N/A';
+
+            // --- Student Login ID ---
+            const [userRows] = await pool.query('SELECT email FROM users WHERE id = ?', [child.user_id]);
+            const studentLoginId = userRows.length > 0 ? userRows[0].email : 'N/A';
+
+            return {
+                name: child.name,
+                id: studentLoginId.toUpperCase(),
+                fees: fees,
+                missedWork: missedWork > 0 ? missedWork : '-',
+                className: child.className,
+                attendance: attendance,
+            };
+        }));
+
+        res.json({ success: true, data: wardsData });
+
+    } catch (error) {
+        console.error("Error fetching parent's wards summary:", error);
+        res.status(500).json({ success: false, message: 'Server error while fetching your children\'s data.' });
+    }
+});
+// ===================================================================
+// End of moved block
+// ===================================================================
 
 router.get('/:id', [auth, authorize(['SuperAdmin', 'Admin'])], async (req, res) => {
     const { id } = req.params;
