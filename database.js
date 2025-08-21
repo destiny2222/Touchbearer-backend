@@ -360,8 +360,9 @@ async function initializeDatabase() {
                 class_id VARCHAR(36) NOT NULL,
                 branch_id VARCHAR(36) NOT NULL,
                 date DATE NOT NULL,
-                status ENUM('Present', 'Absent', 'Leave') NOT NULL,
+                status ENUM('Present', 'Absent', 'Late') NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY unique_attendance (student_id, date),
                 FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
                 FOREIGN KEY (class_id) REFERENCES classes(id) ON DELETE CASCADE,
                 FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE

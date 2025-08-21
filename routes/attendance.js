@@ -5,7 +5,6 @@ const { v4: uuidv4 } = require('uuid');
 const auth = require('../middleware/auth');
 const authorize = require('../middleware/authorize');
 
-// Mark staff attendance
 router.post('/staff', auth, authorize(['SuperAdmin', 'Admin']), async (req, res) => {
     const { staff_id, branch_id, date, status } = req.body;
 
@@ -13,16 +12,18 @@ router.post('/staff', auth, authorize(['SuperAdmin', 'Admin']), async (req, res)
         return res.status(400).json({ success: false, message: 'Missing required fields' });
     }
 
+    const connection = await pool.getConnection();
     try {
-        const connection = await pool.getConnection();
-
-        // Admin can only mark attendance for their own branch
         if (req.user.roles.includes('Admin')) {
             const [adminStaff] = await connection.query('SELECT branch_id FROM staff WHERE user_id = ?', [req.user.id]);
             if (adminStaff.length === 0 || adminStaff[0].branch_id !== branch_id) {
-                connection.release();
                 return res.status(403).json({ success: false, message: 'You can only mark attendance for your own branch.' });
             }
+        }
+
+        const [existing] = await connection.query('SELECT id FROM staff_attendance WHERE staff_id = ? AND date = ?', [staff_id, date]);
+        if (existing.length > 0) {
+            return res.status(409).json({ success: false, message: 'Attendance for this staff member has already been marked for this date.' });
         }
 
         const newAttendance = {
@@ -34,16 +35,16 @@ router.post('/staff', auth, authorize(['SuperAdmin', 'Admin']), async (req, res)
         };
 
         await connection.query('INSERT INTO staff_attendance SET ?', newAttendance);
-        connection.release();
 
         res.status(201).json({ success: true, message: 'Staff attendance marked successfully', data: newAttendance });
     } catch (error) {
         console.error('Error marking staff attendance:', error);
         res.status(500).json({ success: false, message: 'Server error' });
+    } finally {
+        if (connection) connection.release();
     }
 });
 
-// Get staff attendance
 router.get('/staff', auth, authorize(['SuperAdmin', 'Admin']), async (req, res) => {
     const { branch_id, date } = req.query;
 
@@ -79,67 +80,96 @@ router.get('/staff', auth, authorize(['SuperAdmin', 'Admin']), async (req, res) 
     }
 });
 
-// Mark student attendance
 router.post('/student', auth, authorize(['SuperAdmin', 'Admin', 'Teacher']), async (req, res) => {
-    const { student_id, class_id, branch_id, date, status } = req.body;
+    const { class_id, date, records } = req.body;
 
-    if (!student_id || !class_id || !branch_id || !date || !status) {
-        return res.status(400).json({ success: false, message: 'Missing required fields' });
+    if (!class_id || !date || !records || !Array.isArray(records) || records.length === 0) {
+        return res.status(400).json({ success: false, message: 'Missing or invalid required fields' });
     }
 
+    const connection = await pool.getConnection();
     try {
-        const connection = await pool.getConnection();
+        await connection.beginTransaction();
+
+        const [classData] = await connection.query('SELECT branch_id FROM classes WHERE id = ?', [class_id]);
+        if (classData.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ success: false, message: 'Class not found.' });
+        }
+        const branch_id = classData[0].branch_id;
 
         if (req.user.roles.includes('Admin')) {
             const [adminStaff] = await connection.query('SELECT branch_id FROM staff WHERE user_id = ?', [req.user.id]);
             if (adminStaff.length === 0 || adminStaff[0].branch_id !== branch_id) {
-                connection.release();
+                await connection.rollback();
                 return res.status(403).json({ success: false, message: 'You can only mark attendance for your own branch.' });
             }
         } else if (req.user.roles.includes('Teacher')) {
-            const [teacher] = await connection.query('SELECT class_id FROM staff WHERE user_id = ?', [req.user.id]);
-            if (teacher.length === 0 || !teacher[0].class_id || teacher[0].class_id !== class_id) {
-                connection.release();
+            const [teacherClasses] = await connection.query('SELECT 1 FROM classes WHERE id = ? AND teacher_id = (SELECT id FROM staff WHERE user_id = ?)', [class_id, req.user.id]);
+            if (teacherClasses.length === 0) {
+                await connection.rollback();
                 return res.status(403).json({ success: false, message: 'You can only mark attendance for your own class.' });
             }
         }
 
-        const newAttendance = {
-            id: uuidv4(),
-            student_id,
-            class_id,
-            branch_id,
-            date,
-            status,
-        };
+        const studentIds = records.map(record => record.student_id);
+        const [existing] = await connection.query('SELECT student_id FROM student_attendance WHERE student_id IN (?) AND date = ?', [studentIds, date]);
 
-        await connection.query('INSERT INTO student_attendance SET ?', newAttendance);
-        connection.release();
+        if (existing.length > 0) {
+            await connection.rollback();
+            const existingIds = existing.map(e => e.student_id);
+            return res.status(409).json({
+                success: false,
+                message: 'Attendance has already been marked for one or more students on this date.',
+                duplicate_students: existingIds
+            });
+        }
 
-        res.status(201).json({ success: true, message: 'Student attendance marked successfully', data: newAttendance });
+        const query = `
+            INSERT INTO student_attendance (id, student_id, class_id, branch_id, date, status) 
+            VALUES ?
+        `;
+
+        const values = records.map(record => {
+            const status = record.status.charAt(0).toUpperCase() + record.status.slice(1);
+            return [uuidv4(), record.student_id, class_id, branch_id, date, status];
+        });
+
+        await connection.query(query, [values]);
+
+        await connection.commit();
+
+        res.status(201).json({ success: true, message: 'Student attendance marked successfully.' });
+
     } catch (error) {
+        if (connection) await connection.rollback();
         console.error('Error marking student attendance:', error);
-        res.status(500).json({ success: false, message: 'Server error' });
+        res.status(500).json({ success: false, message: 'Server error while marking attendance.' });
+    } finally {
+        if (connection) connection.release();
     }
 });
 
-// Get student attendance
 router.get('/student', auth, authorize(['SuperAdmin', 'Admin', 'Teacher']), async (req, res) => {
     const { class_id, branch_id, date } = req.query;
 
     try {
         const connection = await pool.getConnection();
-        let query = 'SELECT sa.*, s.first_name, s.last_name FROM student_attendance sa JOIN students s ON sa.student_id = s.id';
+        let query = 'SELECT sa.student_id, sa.status, s.first_name, s.last_name FROM student_attendance sa JOIN students s ON sa.student_id = s.id';
         const queryParams = [];
         let whereClauses = [];
 
         if (req.user.roles.includes('Teacher')) {
-            const [teacher] = await connection.query('SELECT class_id FROM staff WHERE user_id = ?', [req.user.id]);
-            if (teacher.length > 0 && teacher[0].class_id) {
-                whereClauses.push('sa.class_id = ?');
-                queryParams.push(teacher[0].class_id);
+            const [teacher] = await connection.query('SELECT id FROM staff WHERE user_id = ?', [req.user.id]);
+            if (teacher.length > 0) {
+                whereClauses.push('sa.class_id IN (SELECT id FROM classes WHERE teacher_id = ?)');
+                queryParams.push(teacher[0].id);
+
+                if (class_id) {
+                    whereClauses.push('sa.class_id = ?');
+                    queryParams.push(class_id);
+                }
             } else {
-                // if a teacher is not assigned to a class, they should not see any attendance
                 whereClauses.push('1=0');
             }
         } else if (req.user.roles.includes('Admin')) {
@@ -155,14 +185,13 @@ router.get('/student', auth, authorize(['SuperAdmin', 'Admin', 'Teacher']), asyn
                         whereClauses.push('sa.class_id = ?');
                         queryParams.push(class_id);
                     } else {
-                        // if class_id is from another branch, return empty result
                         whereClauses.push('1=0');
                     }
                 }
             } else {
                 whereClauses.push('1=0');
             }
-        } else { // SuperAdmin
+        } else {
             if (branch_id) {
                 whereClauses.push('sa.branch_id = ?');
                 queryParams.push(branch_id);
@@ -191,5 +220,6 @@ router.get('/student', auth, authorize(['SuperAdmin', 'Admin', 'Teacher']), asyn
         res.status(500).json({ success: false, message: 'Server error' });
     }
 });
+
 
 module.exports = router;
