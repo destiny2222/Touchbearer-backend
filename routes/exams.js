@@ -373,6 +373,13 @@ router.get('/me/upcoming', auth, authorize(['Student', 'NewStudent', 'Parent', '
             return res.json({ success: true, data: [] });
         }
 
+        let examTypeFilter = '';
+        if (roles.includes('NewStudent')) {
+            examTypeFilter = 'External';
+        } else if (roles.includes('Student')) {
+            examTypeFilter = 'Internal';
+        }
+
         const query = `
             SELECT
                 e.title,
@@ -384,12 +391,12 @@ router.get('/me/upcoming', auth, authorize(['Student', 'NewStudent', 'Parent', '
             JOIN classes c ON e.class_id = c.id
             JOIN branches b ON e.branch_id = b.id
             LEFT JOIN subjects s ON e.id = s.exam_id
-            WHERE e.exam_date_time > NOW() AND e.class_id IN (?)
+            WHERE e.exam_date_time > NOW() AND e.class_id IN (?) AND e.exam_type = ?
             GROUP BY e.id, e.title, e.exam_date_time, c.name, b.school_name
             ORDER BY e.exam_date_time ASC;
         `;
 
-        const [exams] = await connection.query(query, [uniqueClassIds]);
+        const [exams] = await connection.query(query, [uniqueClassIds, examTypeFilter]);
 
         const upcomingExams = exams.map(exam => ({
             ...exam,
@@ -415,20 +422,28 @@ router.get('/me/upcoming', auth, authorize(['Student', 'NewStudent', 'Parent', '
 router.get('/subjects', [auth, authorize(['Student', 'NewStudent'])], async (req, res) => {
     try {
         let studentClassId;
-        const [newStudent] = await pool.query('SELECT class_id FROM new_students WHERE student_id = (SELECT email FROM users WHERE id = ?)', [req.user.id]);
+        let examTypeFilter;
+        const { roles } = req.user;
 
-        if (newStudent.length > 0) {
-            studentClassId = newStudent[0].class_id;
-        } else {
+        if (roles.includes('NewStudent')) {
+            const [newStudent] = await pool.query('SELECT class_id FROM new_students WHERE student_id = (SELECT email FROM users WHERE id = ?)', [req.user.id]);
+            if (newStudent.length > 0) {
+                studentClassId = newStudent[0].class_id;
+                examTypeFilter = 'External';
+            }
+        } else if (roles.includes('Student')) {
             const [existingStudent] = await pool.query('SELECT class_id FROM students WHERE user_id = ?', [req.user.id]);
             if (existingStudent.length > 0) {
                 studentClassId = existingStudent[0].class_id;
-            } else {
-                return res.status(404).json({ success: false, message: "Student class not found." });
+                examTypeFilter = 'Internal';
             }
         }
 
-        const [exam] = await pool.query('SELECT id FROM exams WHERE class_id = ? AND exam_date_time > NOW() ORDER BY exam_date_time ASC LIMIT 1', [studentClassId]);
+        if (!studentClassId) {
+            return res.status(404).json({ success: false, message: "Student class not found." });
+        }
+
+        const [exam] = await pool.query('SELECT id FROM exams WHERE class_id = ? AND exam_type = ? AND exam_date_time > NOW() ORDER BY exam_date_time ASC LIMIT 1', [studentClassId, examTypeFilter]);
 
         if (exam.length === 0) {
             return res.status(404).json({ success: false, message: "No upcoming exams found for your class." });
