@@ -131,6 +131,13 @@ router.post('/create', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, r
             };
             await connection.query('INSERT INTO students SET ?', studentData);
 
+            // Add student to payment status table for the active term
+            const [activeTerm] = await connection.query('SELECT id FROM terms WHERE is_active = TRUE AND (branch_id = ? OR branch_id IS NULL) ORDER BY branch_id DESC LIMIT 1', [branch_id]);
+            if (activeTerm.length > 0) {
+                const term_id = activeTerm[0].id;
+                await connection.query('INSERT INTO student_payment_statuses (student_id, term_id, status) VALUES (?, ?, ?)', [studentData.id, term_id, 'Not Paid']);
+            }
+
             await connection.commit();
             return res.status(201).json({
                 success: true,
