@@ -549,4 +549,38 @@ router.post('/:id/reset-password', [auth, authorize(['Admin', 'SuperAdmin'])], a
     }
 });
 
+router.get('/search', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => {
+    const { q } = req.query;
+    if (!q || q.length < 2) {
+        return res.json({ success: true, data: [] }); // Don't search for very short strings
+    }
+
+    try {
+        let query = `
+            SELECT id, CONCAT(first_name, ' ', last_name) as name, class_id 
+            FROM students 
+            WHERE first_name LIKE ? OR last_name LIKE ?
+        `;
+        const params = [`%${q}%`, `%${q}%`];
+
+        if (req.user.roles.includes('Admin')) {
+            const adminBranchId = await getAdminBranchId(req.user.id);
+            if (adminBranchId) {
+                query += ' AND branch_id = ?';
+                params.push(adminBranchId);
+            }
+        }
+
+        query += ' LIMIT 10'; // Limit results for performance
+
+        const [students] = await pool.query(query, params);
+        res.json({ success: true, data: students });
+
+    } catch (err) {
+        console.error('Search students error:', err);
+        res.status(500).json({ success: false, message: 'Server error while searching students.' });
+    }
+});
+
+
 module.exports = router;

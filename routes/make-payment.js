@@ -180,7 +180,47 @@ router.post('/verify', async (req, res) => {
                 );
             }
             actionResult = { message: 'School fees payment recorded successfully!' };
+        } else if (metadata.payment_for === 'book_purchase') {
+        const { student_id, book_id, parent_id } = metadata;
+        if (!student_id || !book_id || !parent_id) {
+            throw new Error(`CRITICAL: Missing metadata for book purchase. Ref: ${reference}`);
         }
+
+        const connection = await pool.getConnection();
+        try {
+            await connection.beginTransaction();
+
+            // 1. Lock the book row to prevent race conditions on stock
+            const [bookRows] = await connection.query('SELECT amount, price, branch_id FROM books WHERE id = ? FOR UPDATE', [book_id]);
+            if (bookRows.length === 0) throw new Error('Book not found.');
+            
+            const book = bookRows[0];
+            if (book.amount <= 0) throw new Error('Book is out of stock.');
+
+            // 2. Decrease the book stock
+            await connection.query('UPDATE books SET amount = amount - 1 WHERE id = ?', [book_id]);
+
+            // 3. Log the purchase
+            await connection.query('INSERT INTO student_book_purchases SET ?', {
+                id: uuidv4(),
+                student_id,
+                book_id,
+                branch_id: book.branch_id,
+                price: book.price,
+                payment_status: 'Paid',
+                purchase_method: 'Online'
+            });
+
+            await connection.commit();
+            actionResult = { message: 'Book purchased successfully!' };
+        } catch (err) {
+            await connection.rollback();
+            // Re-throw the error to be caught by the outer catch block
+            throw err; 
+        } finally {
+            connection.release();
+        }
+    }
 
         res.status(200).json({ 
             success: true, 

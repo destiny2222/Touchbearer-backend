@@ -28,6 +28,7 @@ app.use('/api/terms', require('./routes/terms'));
 app.use('/api/fees', require('./routes/fees'));
 app.use('/api/payments', require('./routes/payments'));
 app.use('/api/make-payment', require('./routes/make-payment'));
+app.use('/api/analytics', require('./routes/analytics'));
 
 app.get('/', (req, res) => {
     res.json({ message: 'Hello World!' });

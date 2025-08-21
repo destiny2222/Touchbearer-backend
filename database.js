@@ -403,20 +403,21 @@ async function initializeDatabase() {
             )
         `;
 
-        const createStudentBookPurchasesTable = `
-            CREATE TABLE IF NOT EXISTS student_book_purchases (
-                id VARCHAR(36) PRIMARY KEY,
-                student_id VARCHAR(36) NOT NULL,
-                book_id VARCHAR(36) NOT NULL,
-                branch_id VARCHAR(36) NOT NULL,
-                price DECIMAL(10, 2) NOT NULL,
-                payment_status ENUM('Paid', 'Pending', 'Failed') NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
-                FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE,
-                FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE
-            )
-        `;
+       const createStudentBookPurchasesTable = `
+    CREATE TABLE IF NOT EXISTS student_book_purchases (
+        id VARCHAR(36) PRIMARY KEY,
+        student_id VARCHAR(36) NOT NULL,
+        book_id VARCHAR(36) NOT NULL,
+        branch_id VARCHAR(36) NOT NULL,
+        price DECIMAL(10, 2) NOT NULL,
+        payment_status ENUM('Paid', 'Pending', 'Failed') NOT NULL,
+        purchase_method ENUM('Online', 'Cash') NOT NULL DEFAULT 'Online',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
+        FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE,
+        FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE
+    )
+`;
 
         const createTermsTable = `
             CREATE TABLE IF NOT EXISTS terms (
@@ -472,6 +473,7 @@ async function initializeDatabase() {
                 FOREIGN KEY (term_id) REFERENCES terms(id) ON DELETE CASCADE
             )
         `;
+        
 
         await connection.query(createUsersTable);
         console.log("Users table created");

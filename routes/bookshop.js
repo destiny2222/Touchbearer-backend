@@ -5,8 +5,10 @@ const { v4: uuidv4 } = require('uuid');
 const auth = require('../middleware/auth');
 const authorize = require('../middleware/authorize');
 
-// Create a new book
-router.post('/books', auth, authorize(['SuperAdmin', 'Admin']), async (req, res) => {
+// --- ADMIN ROUTES ---
+
+// Create a new book (no changes, but kept for context)
+router.post('/books', auth, authorize(['SuperAdmin', 'Admin']), async (req, res) => { 
     const { title, author, description, price, cover_image_url, branch_id, amount } = req.body;
 
     if (!title || !author || !price || !branch_id || amount === undefined) {
@@ -50,8 +52,8 @@ router.post('/books', auth, authorize(['SuperAdmin', 'Admin']), async (req, res)
     }
 });
 
-// Update a book
-router.put('/books/:id', auth, authorize(['SuperAdmin', 'Admin']), async (req, res) => {
+// Update a book (no changes, but kept for context)
+router.put('/books/:id', auth, authorize(['SuperAdmin', 'Admin']), async (req, res) => { 
     const { id } = req.params;
     const { title, author, description, price, cover_image_url, amount } = req.body;
 
@@ -100,103 +102,182 @@ router.put('/books/:id', auth, authorize(['SuperAdmin', 'Admin']), async (req, r
     }
 });
 
-// Get all books for the user's branch
-router.get('/books', auth, async (req, res) => {
+// Get all books for an Admin's branch (previously GET /books)
+router.get('/admin/books', auth, authorize(['SuperAdmin', 'Admin']), async (req, res) => {
     try {
         const connection = await pool.getConnection();
-        let userBranchId;
+        let query = 'SELECT * FROM books';
+        const params = [];
 
-        // For students, get branch from their profile
-        if (req.user.roles.includes('Student')) {
-            const [student] = await connection.query('SELECT branch_id FROM students WHERE user_id = ?', [req.user.id]);
-            if (student.length > 0) {
-                userBranchId = student[0].branch_id;
-            }
-        }
-        // For staff (Admin, Teacher, etc.), get branch from their profile
-        else {
+        if (req.user.roles.includes('Admin')) {
             const [staff] = await connection.query('SELECT branch_id FROM staff WHERE user_id = ?', [req.user.id]);
-            if (staff.length > 0) {
-                userBranchId = staff[0].branch_id;
+            if (staff.length > 0 && staff[0].branch_id) {
+                query += ' WHERE branch_id = ?';
+                params.push(staff[0].branch_id);
+            } else {
+                return res.json({ success: true, data: [] }); // Admin not in a branch
             }
         }
-
-        if (!userBranchId) {
-            connection.release();
-            return res.status(404).json({ success: false, message: "User's branch not found." });
-        }
-
-        const [books] = await connection.query('SELECT * FROM books WHERE branch_id = ?', [userBranchId]);
+        const [books] = await connection.query(query, params);
         connection.release();
-
         res.json({ success: true, data: books });
     } catch (error) {
-        console.error('Error fetching books:', error);
+        console.error('Error fetching admin books:', error);
         res.status(500).json({ success: false, message: 'Server error' });
     }
 });
 
-// Purchase a book
-router.post('/purchase', auth, authorize(['Student']), async (req, res) => {
-    const { book_id, payment_status } = req.body;
+// NEW: Get all book purchases for an Admin's branch
+router.get('/purchases', auth, authorize(['SuperAdmin', 'Admin']), async (req, res) => {
+    try {
+        const connection = await pool.getConnection();
+        let query = `
+            SELECT 
+                sbp.id,
+                sbp.price,
+                sbp.payment_status,
+                sbp.purchase_method,
+                sbp.created_at,
+                b.title as book_title,
+                CONCAT(s.first_name, ' ', s.last_name) as student_name
+            FROM student_book_purchases sbp
+            JOIN books b ON sbp.book_id = b.id
+            JOIN students s ON sbp.student_id = s.id
+        `;
+        const params = [];
 
-    if (!book_id || !payment_status) {
-        return res.status(400).json({ success: false, message: 'Missing required fields' });
+        if (req.user.roles.includes('Admin')) {
+            const [staff] = await connection.query('SELECT branch_id FROM staff WHERE user_id = ?', [req.user.id]);
+            if (staff.length > 0 && staff[0].branch_id) {
+                query += ' WHERE sbp.branch_id = ?';
+                params.push(staff[0].branch_id);
+            } else {
+                return res.json({ success: true, data: [] });
+            }
+        }
+        query += ' ORDER BY sbp.created_at DESC';
+
+        const [purchases] = await connection.query(query, params);
+        connection.release();
+        res.json({ success: true, data: purchases });
+    } catch (error) {
+        console.error('Error fetching book purchases:', error);
+        res.status(500).json({ success: false, message: 'Server error' });
+    }
+});
+
+// NEW: Purchase a book with Cash for a student (Admin only)
+router.post('/purchase/cash', auth, authorize(['SuperAdmin', 'Admin']), async (req, res) => {
+    const { book_id, student_id } = req.body;
+    if (!book_id || !student_id) {
+        return res.status(400).json({ success: false, message: 'Book ID and Student ID are required.' });
     }
 
-    const validPaymentStatuses = ['Paid', 'Pending', 'Failed'];
-    if (!validPaymentStatuses.includes(payment_status)) {
-        return res.status(400).json({ success: false, message: 'Invalid payment status' });
-    }
+    const connection = await pool.getConnection();
+    try {
+        await connection.beginTransaction();
 
+        // 1. Get student and book details, ensuring they are in the same branch
+        const [studentRows] = await connection.query('SELECT id, branch_id FROM students WHERE id = ?', [student_id]);
+        if (studentRows.length === 0) throw new Error('Student not found.');
+        const student = studentRows[0];
+
+        const [bookRows] = await connection.query('SELECT amount, price, branch_id FROM books WHERE id = ? FOR UPDATE', [book_id]);
+        if (bookRows.length === 0) throw new Error('Book not found.');
+        const book = bookRows[0];
+        
+        if (book.branch_id !== student.branch_id) throw new Error('Book and student are not in the same branch.');
+
+        // 2. Check stock
+        if (book.amount <= 0) throw new Error('Book is out of stock.');
+
+        // 3. Decrease stock
+        await connection.query('UPDATE books SET amount = amount - 1 WHERE id = ?', [book_id]);
+
+        // 4. Log the purchase
+        const newPurchase = {
+            id: uuidv4(),
+            student_id: student.id,
+            book_id,
+            branch_id: student.branch_id,
+            price: book.price,
+            payment_status: 'Paid',
+            purchase_method: 'Cash',
+        };
+        await connection.query('INSERT INTO student_book_purchases SET ?', newPurchase);
+        
+        // 5. Log to revenue
+        await pool.query('INSERT INTO revenue SET ?', {
+            id: uuidv4(),
+            student_id,
+            email: 'cash.sale@school.system', // Placeholder email for cash sales
+            amount: book.price,
+            reference: `cash_${uuidv4()}`,
+            status: 'success',
+            payment_for: 'book_purchase_cash',
+            paid_at: new Date(),
+        });
+        
+        await connection.commit();
+        res.status(201).json({ success: true, message: 'Cash purchase recorded successfully.', data: newPurchase });
+    } catch (error) {
+        await connection.rollback();
+        console.error('Error with cash purchase:', error);
+        res.status(500).json({ success: false, message: error.message || 'Server error during cash purchase.' });
+    } finally {
+        connection.release();
+    }
+});
+
+
+// --- PARENT ROUTES ---
+
+// NEW: Get all books available to a parent (based on all their children's branches)
+router.get('/parent/books', auth, authorize(['Parent']), async (req, res) => {
     try {
         const connection = await pool.getConnection();
 
-        const [student] = await connection.query('SELECT id, branch_id FROM students WHERE user_id = ?', [req.user.id]);
-        if (student.length === 0) {
-            connection.release();
-            return res.status(404).json({ success: false, message: 'Student profile not found.' });
-        }
-        const studentId = student[0].id;
-        const studentBranchId = student[0].branch_id;
-
-        const [book] = await connection.query('SELECT * FROM books WHERE id = ?', [book_id]);
-        if (book.length === 0) {
-            connection.release();
-            return res.status(404).json({ success: false, message: 'Book not found' });
-        }
-
-        if (book[0].branch_id !== studentBranchId) {
-            connection.release();
-            return res.status(403).json({ success: false, message: 'You can only purchase books from your own branch.' });
+        // Find parent
+        const [parentRows] = await connection.query('SELECT id FROM parents WHERE user_id = ?', [req.user.id]);
+        if (parentRows.length === 0) throw new Error("Parent profile not found.");
+        
+        // Find all distinct branches for this parent's children
+        const [branches] = await connection.query(
+            'SELECT DISTINCT branch_id FROM students WHERE parent_id = ?',
+            [parentRows[0].id]
+        );
+        
+        if (branches.length === 0) {
+            return res.json({ success: true, data: [] }); // Parent has no enrolled children
         }
 
-        // Check if book is available
-        if (book[0].amount <= 0) {
-            connection.release();
-            return res.status(400).json({ success: false, message: 'Book is out of stock' });
-        }
+        const branchIds = branches.map(b => b.branch_id);
+        const placeholders = branchIds.map(() => '?').join(',');
 
-        const newPurchase = {
-            id: uuidv4(),
-            student_id: studentId,
-            book_id,
-            branch_id: studentBranchId,
-            price: book[0].price,
-            payment_status,
-        };
-
-        await connection.query('INSERT INTO student_book_purchases SET ?', newPurchase);
-
-        // Decrease the book amount
-        await connection.query('UPDATE books SET amount = amount - 1 WHERE id = ?', [book_id]);
-
+        const [books] = await connection.query(`SELECT * FROM books WHERE branch_id IN (${placeholders})`, branchIds);
         connection.release();
 
-        res.status(201).json({ success: true, message: 'Book purchased successfully', data: newPurchase });
+        res.json({ success: true, data: books });
     } catch (error) {
-        console.error('Error purchasing book:', error);
-        res.status(500).json({ success: false, message: 'Server error' });
+        console.error('Error fetching parent books:', error);
+        res.status(500).json({ success: false, message: error.message || 'Server error' });
+    }
+});
+
+// NEW: Get a parent's children (to select for book purchase)
+router.get('/parent/children', auth, authorize(['Parent']), async (req, res) => {
+    try {
+        const [parentRows] = await pool.query('SELECT id FROM parents WHERE user_id = ?', [req.user.id]);
+        if (parentRows.length === 0) throw new Error("Parent profile not found.");
+
+        const [children] = await pool.query(
+            'SELECT id, CONCAT(first_name, " ", last_name) as name FROM students WHERE parent_id = ?',
+            [parentRows[0].id]
+        );
+        res.json({ success: true, data: children });
+    } catch (error) {
+        console.error("Error fetching parent's children:", error);
+        res.status(500).json({ success: false, message: error.message || 'Server error' });
     }
 });
 
