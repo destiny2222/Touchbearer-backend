@@ -249,8 +249,6 @@ router.delete('/:examId', [auth, authorize(['Admin', 'SuperAdmin'])], async (req
     } catch (err) {
         console.error('Error deleting exam:', err);
         res.status(500).json({ success: false, message: 'Server error while deleting exam.' });
-    } finally {
-        connection.release();
     }
 });
 

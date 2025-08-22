@@ -239,22 +239,41 @@ router.post('/login/cbt/student', async (req, res) => {
         );
         const roles = userRoles.map(r => r.name);
 
-        if (!roles.includes('NewStudent')) {
+        if (!roles.includes('NewStudent') && !roles.includes('Student')) {
             return res.status(403).json({ success: false, message: 'Invalid credentials' });
         }
 
-        const [studentDetailsResult] = await pool.query(
-            `SELECT 
-                ns.id, ns.student_id, ns.first_name, ns.last_name, c.name as class_applying,
-                b.school_name as branch_name
-             FROM new_students ns
-             JOIN branches b ON ns.branch_id = b.id
-             JOIN classes c ON ns.class_id = c.id
-             WHERE ns.student_id = ?`,
-            [student_id]
-        );
+        let studentDetailsResult;
+        let message;
 
-        if (studentDetailsResult.length === 0) {
+        if (roles.includes('NewStudent')) {
+            [studentDetailsResult] = await pool.query(
+                `SELECT 
+                    ns.id, ns.student_id, ns.first_name, ns.last_name, c.name as class_applying,
+                    b.school_name as branch_name
+                 FROM new_students ns
+                 JOIN branches b ON ns.branch_id = b.id
+                 JOIN classes c ON ns.class_id = c.id
+                 WHERE ns.student_id = ?`,
+                [student_id]
+            );
+            message = 'Login successful. Welcome to your entrance exam.';
+        } else { // Student
+            [studentDetailsResult] = await pool.query(
+                `SELECT 
+                    s.id, u.email as student_id, s.first_name, s.last_name, c.name as class_applying,
+                    b.school_name as branch_name
+                 FROM students s
+                 JOIN users u ON s.user_id = u.id
+                 JOIN branches b ON s.branch_id = b.id
+                 JOIN classes c ON s.class_id = c.id
+                 WHERE s.user_id = ?`,
+                [user.id]
+            );
+            message = 'Login successful. Welcome to your exam.';
+        }
+
+        if (!studentDetailsResult || studentDetailsResult.length === 0) {
             return res.status(404).json({ success: false, message: 'Invalid credentials' });
         }
 
@@ -262,7 +281,7 @@ router.post('/login/cbt/student', async (req, res) => {
 
         res.json({
             success: true,
-            message: 'Login successful. Welcome to your entrance exam.',
+            message: message,
             data: {
                 student: studentDetailsResult[0],
                 token
