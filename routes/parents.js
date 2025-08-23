@@ -35,6 +35,13 @@ async function isAuthorizedAdmin(adminUserId, parentId) {
     return children.length > 0;
 }
 
+function getOrdinal(n) {
+    if (n === null || n === undefined || n === 0) return null;
+    const s = ["th", "st", "nd", "rd"];
+    const v = n % 100;
+    return n + (s[(v - 20) % 10] || s[v] || s[0]);
+}
+
 router.get('/', [auth, authorize(['SuperAdmin', 'Admin'])], async (req, res) => {
     try {
         let query = `
@@ -89,7 +96,7 @@ router.get('/fees-summary', [auth, authorize(['Parent'])], async (req, res) => {
 
         // 2. Get all children for the parent
         const [children] = await pool.query(
-            'SELECT id, CONCAT(first_name, " ", last_name) as name, class_id, branch_id FROM students WHERE parent_id = ?', 
+            'SELECT id, CONCAT(first_name, " ", last_name) as name, class_id, branch_id FROM students WHERE parent_id = ?',
             [parentId]
         );
 
@@ -108,7 +115,7 @@ router.get('/fees-summary', [auth, authorize(['Parent'])], async (req, res) => {
                 [child.branch_id]
             );
 
-            if (activeTermRows.length === 0) continue; 
+            if (activeTermRows.length === 0) continue;
             const activeTerm = activeTermRows[0];
 
             // Get total fees due and total amount paid for the term
@@ -121,7 +128,7 @@ router.get('/fees-summary', [auth, authorize(['Parent'])], async (req, res) => {
                 'SELECT SUM(amount_paid) as total_paid FROM payments WHERE student_id = ? AND term_id = ?',
                 [child.id, activeTerm.id]
             );
-            
+
             const balance = (total_due || 0) - (total_paid || 0);
 
             // Determine overall status for the term
@@ -132,7 +139,7 @@ router.get('/fees-summary', [auth, authorize(['Parent'])], async (req, res) => {
                 'SELECT id, name, amount, description FROM fees WHERE class_id = ? AND term_id = ?',
                 [child.class_id, activeTerm.id]
             );
-            
+
             feeItems.forEach(fee => {
                 allFees.push({
                     id: fee.id,
@@ -245,9 +252,6 @@ router.get('/wards-summary', [auth, authorize(['Parent'])], async (req, res) => 
         res.status(500).json({ success: false, message: 'Server error while fetching your children\'s data.' });
     }
 });
-// ===================================================================
-// End of moved block
-// ===================================================================
 
 // @route   GET /api/parents/wards/results
 // @desc    Get all published results for all of the parent's children for the current term
@@ -260,45 +264,79 @@ router.get('/wards/results', [auth, authorize(['Parent'])], async (req, res) => 
         }
         const parentId = parent[0].id;
 
-        const [children] = await pool.query('SELECT user_id, branch_id FROM students WHERE parent_id = ?', [parentId]);
+        const [children] = await pool.query(`
+            SELECT s.id, s.user_id, s.first_name, s.last_name, s.class_id, s.branch_id, c.name as class_name
+            FROM students s
+            JOIN classes c ON s.class_id = c.id
+            WHERE s.parent_id = ?
+        `, [parentId]);
+
         if (children.length === 0) {
             return res.json({ success: true, data: [] });
         }
 
-        const branch_id = children[0].branch_id;
-        const children_user_ids = children.map(c => c.user_id);
-
-        const [terms] = await pool.query('SELECT id FROM terms WHERE branch_id = ? AND is_active = TRUE', [branch_id]);
-        if (terms.length === 0) {
-            // Fallback to global term if no branch-specific term is active
-            const [globalTerms] = await pool.query('SELECT id FROM terms WHERE branch_id IS NULL AND is_active = TRUE');
-            if (globalTerms.length === 0) {
-                return res.status(404).json({ success: false, message: 'No active term found.' });
+        const resultsData = await Promise.all(children.map(async (child) => {
+            const [terms] = await pool.query('SELECT id, start_date, end_date FROM terms WHERE branch_id = ? AND is_active = TRUE', [child.branch_id]);
+            if (terms.length === 0) {
+                const [globalTerms] = await pool.query('SELECT id, start_date, end_date FROM terms WHERE branch_id IS NULL AND is_active = TRUE');
+                if (globalTerms.length === 0) {
+                    return { child_id: child.id, child_name: `${child.first_name} ${child.last_name}`, class_name: child.class_name, attendance: 'N/A', exam_results: [] };
+                }
+                terms.push(globalTerms[0]);
             }
-            terms.push(globalTerms[0]);
-        }
-        const term_id = terms[0].id;
+            const term = terms[0];
+            const term_id = term.id;
+            const term_start_date = term.start_date;
+            const term_end_date = new Date() < new Date(term.end_date) ? new Date().toISOString().split('T')[0] : term.end_date;
 
-        const query = `
-            SELECT
-                er.id,
-                er.score,
-                er.total_questions,
-                er.answered_questions,
-                er.submitted_at,
-                e.title as exam_title,
-                e.exam_date_time,
-                s.first_name,
-                s.last_name
-            FROM exam_results er
-            JOIN exams e ON er.exam_id = e.id
-            JOIN students s ON er.student_id = s.user_id
-            WHERE er.student_id IN (?) AND er.published = TRUE AND er.term_id = ?
-            ORDER BY s.last_name, s.first_name, e.exam_date_time DESC
-        `;
+            const [[{ present_days }]] = await pool.query(
+                `SELECT COUNT(*) as present_days FROM student_attendance WHERE student_id = ? AND status IN ('Present', 'Late') AND date BETWEEN ? AND ?`,
+                [child.id, term_start_date, term_end_date]
+            );
+            const [[{ total_days }]] = await pool.query(
+                `SELECT COUNT(DISTINCT date) as total_days FROM student_attendance WHERE class_id = ? AND date BETWEEN ? AND ?`,
+                [child.class_id, term_start_date, term_end_date]
+            );
 
-        const [results] = await pool.query(query, [children_user_ids, term_id]);
-        res.json({ success: true, data: results });
+            const attendance = total_days > 0 ? `${present_days}/${total_days} Days` : 'N/A';
+
+            const [examResults] = await pool.query(`
+                SELECT
+                    er.id, er.score, er.total_questions, er.answered_questions, er.submitted_at,
+                    e.id as exam_id, e.title as exam_title, e.exam_date_time,
+                    s.first_name, s.last_name
+                FROM exam_results er
+                JOIN exams e ON er.exam_id = e.id
+                JOIN students s ON er.student_id = s.user_id
+                WHERE er.student_id = ? AND er.published = TRUE AND er.term_id = ?
+                ORDER BY e.exam_date_time DESC
+            `, [child.user_id, term_id]);
+
+            const resultsWithPosition = await Promise.all(examResults.map(async (result) => {
+                const [classScores] = await pool.query(`
+                    SELECT er.score FROM exam_results er
+                    JOIN students s ON er.student_id = s.user_id
+                    WHERE er.exam_id = ? AND s.class_id = ? AND er.published = TRUE
+                    ORDER BY er.score DESC
+                `, [result.exam_id, child.class_id]);
+
+                const scores = classScores.map(s => parseFloat(s.score));
+                const rank = scores.indexOf(parseFloat(result.score)) + 1;
+
+                result.position = getOrdinal(rank);
+                return result;
+            }));
+
+            return {
+                child_id: child.id,
+                child_name: `${child.first_name} ${child.last_name}`,
+                class_name: child.class_name,
+                attendance,
+                exam_results: resultsWithPosition
+            };
+        }));
+
+        res.json({ success: true, data: resultsData });
 
     } catch (err) {
         console.error('Error fetching children exam results:', err);

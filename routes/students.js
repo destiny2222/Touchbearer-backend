@@ -583,4 +583,69 @@ router.get('/search', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, re
 });
 
 
+
+
+// @route   GET /api/students/me/stats
+// @desc    Get performance statistics for the currently logged-in student
+// @access  Student, NewStudent
+router.get('/me/stats', [auth, authorize(['Student', 'NewStudent'])], async (req, res) => {
+    try {
+        const [student] = await pool.query(
+            'SELECT id, class_id, branch_id FROM students WHERE user_id = ?', 
+            [req.user.id]
+        );
+
+        if (student.length === 0) {
+            return res.status(404).json({ success: false, message: 'Student profile not found.' });
+        }
+        const { id: studentId, class_id, branch_id } = student[0];
+
+        // Find the active term for the student's branch
+        const [terms] = await pool.query(
+            'SELECT id, start_date, end_date FROM terms WHERE (branch_id = ? OR branch_id IS NULL) AND is_active = TRUE ORDER BY branch_id DESC LIMIT 1',
+            [branch_id]
+        );
+
+        if (terms.length === 0) {
+            return res.json({ success: true, data: { attendance: 'N/A', punctuality: 'N/A' } });
+        }
+        const term = terms[0];
+
+        // Ensure we don't calculate for future dates
+        const today = new Date();
+        const termEndDate = new Date(term.end_date);
+        const effectiveEndDate = today < termEndDate ? today.toISOString().split('T')[0] : term.end_date;
+
+        // Calculate attendance stats
+        const [[{ present_days }]] = await pool.query(
+            `SELECT COUNT(*) as present_days FROM student_attendance WHERE student_id = ? AND status = 'Present' AND date BETWEEN ? AND ?`,
+            [studentId, term.start_date, effectiveEndDate]
+        );
+        const [[{ late_days }]] = await pool.query(
+            `SELECT COUNT(*) as late_days FROM student_attendance WHERE student_id = ? AND status = 'Late' AND date BETWEEN ? AND ?`,
+            [studentId, term.start_date, effectiveEndDate]
+        );
+        const [[{ total_school_days }]] = await pool.query(
+            `SELECT COUNT(DISTINCT date) as total_days FROM student_attendance WHERE class_id = ? AND date BETWEEN ? AND ?`,
+            [class_id, term.start_date, effectiveEndDate]
+        );
+        
+        const attended_days = present_days + late_days;
+        const attendance = total_school_days > 0 ? `${attended_days}/${total_school_days} Days` : 'N/A';
+        
+        // Calculate punctuality
+        const punctuality = attended_days > 0 
+            ? `${Math.round((present_days / attended_days) * 100)}%`
+            : 'N/A';
+        
+        res.json({ success: true, data: { attendance, punctuality } });
+
+    } catch (error) {
+        console.error('Error fetching student stats:', error);
+        res.status(500).json({ success: false, message: 'Server error while fetching stats.' });
+    }
+});
+
+
+
 module.exports = router;

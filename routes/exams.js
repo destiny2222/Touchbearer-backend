@@ -5,6 +5,13 @@ const { v4: uuidv4 } = require('uuid');
 const auth = require('../middleware/auth');
 const authorize = require('../middleware/authorize');
 
+
+function getOrdinal(n) {
+    const s = ["th", "st", "nd", "rd"];
+    const v = n % 100;
+    return n + (s[(v - 20) % 10] || s[v] || s[0]);
+}
+
 // @route   POST /api/exams/store
 // @desc    Create a new exam with subjects and questions
 // @access  Admin, SuperAdmin
@@ -745,11 +752,11 @@ router.put('/results/publish', [auth, authorize(['Teacher'])], async (req, res) 
 // @access  Student
 router.get('/results/me', [auth, authorize(['Student'])], async (req, res) => {
     try {
-        const [student] = await pool.query('SELECT branch_id FROM students WHERE user_id = ?', [req.user.id]);
+        const [student] = await pool.query('SELECT id, class_id, branch_id FROM students WHERE user_id = ?', [req.user.id]);
         if (student.length === 0) {
             return res.status(404).json({ success: false, message: 'Student not found.' });
         }
-        const branch_id = student[0].branch_id;
+        const { class_id, branch_id } = student[0];
 
         const [terms] = await pool.query('SELECT id FROM terms WHERE branch_id = ? AND is_active = TRUE', [branch_id]);
         if (terms.length === 0) {
@@ -761,11 +768,8 @@ router.get('/results/me', [auth, authorize(['Student'])], async (req, res) => {
             SELECT
                 er.id,
                 er.score,
-                er.total_questions,
-                er.answered_questions,
-                er.submitted_at,
-                e.title as exam_title,
-                e.exam_date_time
+                er.exam_id,
+                e.title as exam_title
             FROM exam_results er
             JOIN exams e ON er.exam_id = e.id
             WHERE er.student_id = ? AND er.published = TRUE AND er.term_id = ?
@@ -773,7 +777,26 @@ router.get('/results/me', [auth, authorize(['Student'])], async (req, res) => {
         `;
 
         const [results] = await pool.query(query, [req.user.id, term_id]);
-        res.json({ success: true, data: results });
+
+        // Calculate position for each result
+        const resultsWithPosition = await Promise.all(results.map(async (result) => {
+            const [classScores] = await pool.query(`
+                SELECT score FROM exam_results 
+                WHERE exam_id = ? AND published = TRUE AND student_id IN 
+                (SELECT user_id FROM students WHERE class_id = ?)
+                ORDER BY score DESC
+            `, [result.exam_id, class_id]);
+
+            const scores = classScores.map(s => parseFloat(s.score));
+            const rank = scores.indexOf(parseFloat(result.score)) + 1;
+            
+            return {
+                ...result,
+                position: getOrdinal(rank)
+            };
+        }));
+
+        res.json({ success: true, data: resultsWithPosition });
 
     } catch (err) {
         console.error('Error fetching student exam results:', err);
