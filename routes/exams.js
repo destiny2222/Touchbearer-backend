@@ -257,18 +257,22 @@ router.delete('/:examId', [auth, authorize(['Admin', 'SuperAdmin'])], async (req
 // @access  Teacher
 router.get('/class', [auth, authorize(['Teacher'])], async (req, res) => {
     try {
-        const [staff] = await pool.query('SELECT class_id FROM staff WHERE user_id = ?', [req.user.id]);
+        const [staff] = await pool.query('SELECT id FROM staff WHERE user_id = ?', [req.user.id]);
 
         if (staff.length === 0) {
             return res.status(403).json({ success: false, message: 'Authenticated user is not registered as a staff member.' });
         }
+        const teacherId = staff[0].id;
 
-        const classId = staff[0].class_id;
-        if (!classId) {
-            return res.status(404).json({ success: false, message: 'Teacher is not assigned to a class.' });
+        const [classes] = await pool.query('SELECT id FROM classes WHERE teacher_id = ?', [teacherId]);
+
+        if (classes.length === 0) {
+            return res.status(404).json({ success: false, message: 'Teacher is not assigned to any class.' });
         }
 
-        const [exams] = await pool.query('SELECT * FROM exams WHERE class_id = ? ORDER BY exam_date_time DESC', [classId]);
+        const classIds = classes.map(c => c.id);
+
+        const [exams] = await pool.query('SELECT * FROM exams WHERE class_id IN (?) ORDER BY exam_date_time DESC', [classIds]);
 
         res.json({ success: true, data: exams });
 
@@ -661,11 +665,17 @@ router.get('/:examId/results/teacher', [auth, authorize(['Teacher'])], async (re
     const { examId } = req.params;
 
     try {
-        const [staff] = await pool.query('SELECT class_id FROM staff WHERE user_id = ?', [req.user.id]);
-        if (staff.length === 0 || !staff[0].class_id) {
-            return res.status(403).json({ success: false, message: 'You are not assigned to a class.' });
+        const [staff] = await pool.query('SELECT id FROM staff WHERE user_id = ?', [req.user.id]);
+        if (staff.length === 0) {
+            return res.status(403).json({ success: false, message: 'You are not registered as a staff member.' });
         }
-        const teacherClassId = staff[0].class_id;
+        const teacherId = staff[0].id;
+
+        const [teacherClasses] = await pool.query('SELECT id FROM classes WHERE teacher_id = ?', [teacherId]);
+        if (teacherClasses.length === 0) {
+            return res.status(403).json({ success: false, message: 'You are not assigned to any class.' });
+        }
+        const teacherClassIds = teacherClasses.map(c => c.id);
 
         const query = `
             SELECT
@@ -680,10 +690,10 @@ router.get('/:examId/results/teacher', [auth, authorize(['Teacher'])], async (re
             FROM exam_results er
             JOIN users u ON er.student_id = u.id
             JOIN students s ON u.id = s.user_id
-            WHERE er.exam_id = ? AND s.class_id = ?
+            WHERE er.exam_id = ? AND s.class_id IN (?)
         `;
 
-        const [results] = await pool.query(query, [examId, teacherClassId]);
+        const [results] = await pool.query(query, [examId, teacherClassIds]);
         res.json({ success: true, data: results });
 
     } catch (err) {
@@ -699,8 +709,14 @@ router.put('/results/publish', [auth, authorize(['Teacher'])], async (req, res) 
     const { exam_id, class_id } = req.body;
 
     try {
-        const [staff] = await pool.query('SELECT class_id FROM staff WHERE user_id = ?', [req.user.id]);
-        if (staff.length === 0 || staff[0].class_id !== class_id) {
+        const [staff] = await pool.query('SELECT id FROM staff WHERE user_id = ?', [req.user.id]);
+        if (staff.length === 0) {
+            return res.status(403).json({ success: false, message: 'You are not registered as a staff member.' });
+        }
+        const teacherId = staff[0].id;
+
+        const [teacherClass] = await pool.query('SELECT id FROM classes WHERE teacher_id = ? AND id = ?', [teacherId, class_id]);
+        if (teacherClass.length === 0) {
             return res.status(403).json({ success: false, message: 'You are not authorized to publish results for this class.' });
         }
 
