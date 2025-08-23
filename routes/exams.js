@@ -441,14 +441,25 @@ router.get('/subjects', [auth, authorize(['Student', 'NewStudent'])], async (req
             return res.status(404).json({ success: false, message: "Student class not found." });
         }
 
-        const [exam] = await pool.query('SELECT id FROM exams WHERE class_id = ? AND exam_type = ? AND exam_date_time > NOW() ORDER BY exam_date_time ASC LIMIT 1', [studentClassId, examTypeFilter]);
+        const [exam] = await pool.query('SELECT id, duration_hours FROM exams WHERE class_id = ? AND exam_type = ? AND exam_date_time > NOW() ORDER BY exam_date_time ASC LIMIT 1', [studentClassId, examTypeFilter]);
 
         if (exam.length === 0) {
             return res.status(404).json({ success: false, message: "No upcoming exams found for your class." });
         }
 
-        const [subjects] = await pool.query('SELECT s.id, s.title, s.exam_id, e.duration_hours AS exam_duration FROM subjects s JOIN exams e ON s.exam_id = e.id WHERE s.exam_id = ?', [exam[0].id]);
-        res.json({ success: true, data: subjects });
+        const examId = exam[0].id;
+        const examDuration = exam[0].duration_hours;
+
+        const [subjects] = await pool.query('SELECT id, title FROM subjects WHERE exam_id = ?', [examId]);
+
+        res.json({
+            success: true,
+            data: {
+                examId,
+                examDuration,
+                subjects
+            }
+        });
         console.log('Subjects fetched successfully.');
     } catch (err) {
         console.error(err);
@@ -503,60 +514,84 @@ router.get('/subjects/:subjectId/questions', [auth, authorize(['Student', 'NewSt
 // @desc    Submit answers and calculate score
 // @access  Student, NewStudent
 router.post('/answers', [auth, authorize(['Student', 'NewStudent'])], async (req, res) => {
-    const { answers } = req.body; // answers: [{ question_id: int, selected_option_index: int }]
-    const student_id = req.user.id;
+    const { examId, answers } = req.body; // answers: [{ questionId: string, selectedOptionIndex: int }]
+    const userId = req.user.id;
 
-    if (!answers || !Array.isArray(answers) || answers.length === 0) {
-        return res.status(400).json({ success: false, message: 'Invalid answers format.' });
+    if (!examId || !answers || !Array.isArray(answers)) {
+        return res.status(400).json({ success: false, message: 'Missing examId or answers.' });
     }
 
     const connection = await pool.getConnection();
     try {
         await connection.beginTransaction();
 
-        const questionIds = answers.map(a => a.question_id);
-        const [questions] = await connection.query('SELECT id, correct_answer_index, subject_id FROM questions WHERE id IN (?)', [questionIds]);
-
-        if (questions.length === 0) {
+        // Fetch exam details and validate
+        const [examResult] = await connection.query('SELECT * FROM exams WHERE id = ?', [examId]);
+        if (examResult.length === 0) {
             await connection.rollback();
-            return res.status(404).json({ success: false, message: 'Associated questions not found.' });
+            return res.status(404).json({ success: false, message: 'Exam not found.' });
+        }
+        const exam = examResult[0];
+
+        // Check if exam is still active
+        const now = new Date();
+        const examDateTime = new Date(exam.exam_date_time);
+        const examEndTime = new Date(examDateTime.getTime() + exam.duration_hours * 60 * 60 * 1000);
+        if (now > examEndTime) {
+            await connection.rollback();
+            return res.status(403).json({ success: false, message: 'The time for this exam has passed. Submission is no longer accepted.' });
         }
 
-        const [subject] = await connection.query('SELECT exam_id FROM subjects WHERE id = ?', [questions[0].subject_id]);
-        const exam_id = subject[0].exam_id;
-
-        // Get the branch_id from the exam
-        const [exam] = await connection.query('SELECT branch_id FROM exams WHERE id = ?', [exam_id]);
-        const branch_id = exam[0].branch_id;
-
-        // Get the current active term for the branch
-        const [terms] = await connection.query('SELECT id FROM terms WHERE branch_id = ? AND is_active = TRUE', [branch_id]);
-        const term_id = terms.length > 0 ? terms[0].id : null;
-
-        const [existingResult] = await connection.query('SELECT id FROM exam_results WHERE exam_id = ? AND student_id = ?', [exam_id, student_id]);
+        // Check for prior submissions
+        const [existingResult] = await connection.query('SELECT id FROM exam_results WHERE exam_id = ? AND student_id = ?', [examId, userId]);
         if (existingResult.length > 0) {
             await connection.rollback();
             return res.status(400).json({ success: false, message: 'You have already submitted answers for this exam.' });
         }
 
-        let score = 0;
-        const questionMap = new Map(questions.map(q => [q.id, q.correct_answer_index]));
+        // Fetch all questions for the exam to validate answers and calculate score
+        const [allQuestions] = await connection.query(`
+            SELECT q.id, q.correct_answer_index 
+            FROM questions q
+            JOIN subjects s ON q.subject_id = s.id
+            WHERE s.exam_id = ?
+        `, [examId]);
 
+        if (allQuestions.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ success: false, message: 'No questions found for this exam.' });
+        }
+
+        const totalQuestions = allQuestions.length;
+        const questionMap = new Map(allQuestions.map(q => [q.id, q.correct_answer_index]));
+
+        let score = 0;
         for (const answer of answers) {
-            if (questionMap.get(answer.question_id) === answer.selected_option_index) {
-                score++;
+            const questionId = answer.questionId;
+            const selectedOptionIndex = answer.selectedOptionIndex;
+
+            if (questionMap.has(questionId)) {
+                // Use non-strict equality to guard against type mismatches (e.g., '1' vs 1)
+                if (questionMap.get(questionId) == selectedOptionIndex) {
+                    score++;
+                }
             }
         }
 
-        const total_questions = (await connection.query('SELECT COUNT(*) as count FROM questions q JOIN subjects s ON q.subject_id = s.id WHERE s.exam_id = ?', [exam_id]))[0][0].count;
+        // Avoid division by zero if an exam has no questions
+        const percentageScore = totalQuestions > 0 ? (score / totalQuestions) * 100 : 0;
+
+        // Get active term for the branch
+        const [terms] = await connection.query('SELECT id FROM terms WHERE branch_id = ? AND is_active = TRUE', [exam.branch_id]);
+        const termId = terms.length > 0 ? terms[0].id : null;
 
         const result = {
             id: uuidv4(),
-            exam_id,
-            student_id,
-            term_id,
-            score: (score / total_questions) * 100,
-            total_questions,
+            exam_id: examId,
+            student_id: userId,
+            term_id: termId,
+            score: percentageScore,
+            total_questions: totalQuestions,
             answered_questions: answers.length,
             answers: JSON.stringify(answers),
         };
