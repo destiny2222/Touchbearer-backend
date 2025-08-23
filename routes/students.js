@@ -583,6 +583,51 @@ router.get('/search', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, re
 });
 
 
+// @route   GET /api/students/me
+// @desc    Get current student's profile
+// @access  Student, NewStudent
+router.get('/me', [auth, authorize(['Student', 'NewStudent'])], async (req, res) => {
+    try {
+        let studentProfile = null;
+
+        // First, check the main 'students' table
+        const [studentRows] = await pool.query(`
+            SELECT 
+                s.id, s.user_id, s.first_name, s.last_name, s.class_id, c.name as class_name
+            FROM students s
+            LEFT JOIN classes c ON s.class_id = c.id
+            WHERE s.user_id = ?
+        `, [req.user.id]);
+
+        if (studentRows.length > 0) {
+            studentProfile = studentRows[0];
+        } else {
+            // If not found, check the 'new_students' table
+            const [newUserRows] = await pool.query(`
+                SELECT 
+                    ns.id, u.id as user_id, ns.first_name, ns.last_name, ns.class_id, c.name as class_name
+                FROM new_students ns
+                JOIN users u ON ns.student_id = u.email
+                LEFT JOIN classes c ON ns.class_id = c.id
+                WHERE u.id = ?
+            `, [req.user.id]);
+            
+            if (newUserRows.length > 0) {
+                studentProfile = newUserRows[0];
+            }
+        }
+
+        if (!studentProfile) {
+            return res.status(404).json({ success: false, message: 'Student profile not found.' });
+        }
+
+        res.json({ success: true, data: studentProfile });
+
+    } catch (err) {
+        console.error('Error fetching student profile:', err);
+        res.status(500).json({ success: false, message: 'Server error while fetching profile.' });
+    }
+});
 
 
 // @route   GET /api/students/me/stats
