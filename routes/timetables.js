@@ -49,6 +49,24 @@ router.post('/', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) =>
             }
         }
 
+        // Validate classroom_ids
+        const classroomIds = new Set();
+        for (const day in timetable_data) {
+            for (const slot of timetable_data[day]) {
+                if (slot.classroom_id) {
+                    classroomIds.add(slot.classroom_id);
+                }
+            }
+        }
+
+        if (classroomIds.size > 0) {
+            const [[{ count }]] = await connection.query('SELECT COUNT(*) as count FROM classrooms WHERE id IN (?) AND branch_id = ?', [Array.from(classroomIds), branch_id]);
+            if (count !== classroomIds.size) {
+                await connection.rollback();
+                return res.status(400).json({ success: false, message: 'One or more classrooms are invalid or do not belong to this branch.' });
+            }
+        }
+
         const newTimetable = {
             id: uuidv4(),
             class_id,
@@ -99,10 +117,27 @@ router.get('/class/:classId', [auth, authorize(['Admin', 'SuperAdmin', 'Teacher'
         const timetableData = JSON.parse(timetable.timetable_data);
 
         const teacherIds = new Set();
+        const classroomIds = new Set();
         for (const day in timetableData) {
             for (const slot of timetableData[day]) {
                 if (slot.teacher_id) {
                     teacherIds.add(slot.teacher_id);
+                }
+                if (slot.classroom_id) {
+                    classroomIds.add(slot.classroom_id);
+                }
+            }
+        }
+
+        if (classroomIds.size > 0) {
+            const [classrooms] = await pool.query('SELECT id, name FROM classrooms WHERE id IN (?)', [Array.from(classroomIds)]);
+            const classroomMap = new Map(classrooms.map(c => [c.id, c.name]));
+
+            for (const day in timetableData) {
+                for (const slot of timetableData[day]) {
+                    if (slot.classroom_id) {
+                        slot.classroom_name = classroomMap.get(slot.classroom_id) || null;
+                    }
                 }
             }
         }
@@ -152,12 +187,31 @@ router.put('/:id', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) 
             return res.status(404).json({ success: false, message: 'Timetable not found.' });
         }
 
+        const branch_id = rows[0].branch_id;
         // Admin scope check
         if (req.user.roles.includes('Admin')) {
             const adminBranchId = await getAdminBranchId(req.user.id);
-            if (adminBranchId !== rows[0].branch_id) {
+            if (adminBranchId !== branch_id) {
                 await connection.rollback();
                 return res.status(403).json({ success: false, message: 'Admins can only update timetables for their own branch.' });
+            }
+        }
+
+        // Validate classroom_ids
+        const classroomIds = new Set();
+        for (const day in timetable_data) {
+            for (const slot of timetable_data[day]) {
+                if (slot.classroom_id) {
+                    classroomIds.add(slot.classroom_id);
+                }
+            }
+        }
+
+        if (classroomIds.size > 0) {
+            const [[{ count }]] = await connection.query('SELECT COUNT(*) as count FROM classrooms WHERE id IN (?) AND branch_id = ?', [Array.from(classroomIds), branch_id]);
+            if (count !== classroomIds.size) {
+                await connection.rollback();
+                return res.status(400).json({ success: false, message: 'One or more classrooms are invalid or do not belong to this branch.' });
             }
         }
 
