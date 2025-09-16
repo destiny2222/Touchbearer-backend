@@ -221,6 +221,17 @@ async function initializeDatabase() {
             )
         `;
 
+        const createClassroomsTable = `
+            CREATE TABLE IF NOT EXISTS classrooms (
+                id VARCHAR(36) PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                branch_id VARCHAR(36) NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE
+            )
+        `;
+
         const createExamsTable = `
             CREATE TABLE IF NOT EXISTS exams (
                 id VARCHAR(36) PRIMARY KEY,
@@ -516,6 +527,9 @@ async function initializeDatabase() {
 
         await connection.query(createClassesTable);
         console.log("Classes table created");
+
+        await connection.query(createClassroomsTable);
+        console.log("Classrooms table created");
 
         await connection.query(createExamsTable);
         console.log("Exams table created");
