@@ -210,16 +210,17 @@ async function initializeDatabase() {
             CREATE TABLE IF NOT EXISTS terms (
                 id VARCHAR(36) PRIMARY KEY,
                 name VARCHAR(255) NOT NULL,
-                branch_id VARCHAR(36) NOT NULL,
-                teacher_id VARCHAR(36) NOT NULL,
-                total_student INT DEFAULT 0,
+                branch_id VARCHAR(36),
+                start_date DATE NOT NULL,
+                end_date DATE NOT NULL,
+                is_active BOOLEAN DEFAULT FALSE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE,
-                FOREIGN KEY (teacher_id) REFERENCES staff(id) ON DELETE RESTRICT
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE
             )
         `;
 
-        const createInventoryTable = `
+         const createInventoryTable = `
             CREATE TABLE IF NOT EXISTS inventory (
                 id VARCHAR(36) PRIMARY KEY,
                 name VARCHAR(255) NOT NULL,
@@ -567,16 +568,8 @@ async function initializeDatabase() {
         console.log("Events table created");
         await connection.query(createExpensesTable);
         console.log("Expenses table created");
-
-        await connection.query(createStaffTable);
-        console.log("Staff table created");
-
-        await connection.query(createClassesTable);
-        console.log("Classes table created");
-
-        await connection.query(createInventoryTable);
-        console.log("Inventory table created");
-
+        await connection.query(createTermsTable);
+        console.log("Terms table created");
         await connection.query(createExamsTable);
         console.log("Exams table created");
         await connection.query(createSubjectsTable);
@@ -615,6 +608,8 @@ async function initializeDatabase() {
         console.log("Ebooks table created");
         await connection.query(createIllnessLogsTable);
         console.log("Illness logs table created");
+        await connection.query(createInventoryTable);
+        console.log("Inventory table created");
         await connection.query(createRevenueTable);
         console.log("Revenue table created");
 
