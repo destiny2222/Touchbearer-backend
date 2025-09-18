@@ -58,6 +58,73 @@ async function initializeDatabase() {
             )
         `;
 
+        const createSuperAdminsTable = `
+            CREATE TABLE IF NOT EXISTS super_admins (
+                id VARCHAR(36) PRIMARY KEY,
+                user_id VARCHAR(36) NOT NULL,
+                name VARCHAR(255) NOT NULL,
+                phone VARCHAR(255) NOT NULL,
+                image VARCHAR(255),
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id)
+            )
+        `;
+
+        const createBranchesTable = `
+            CREATE TABLE IF NOT EXISTS branches (
+                id VARCHAR(36) PRIMARY KEY,
+                school_name VARCHAR(255) NOT NULL,
+                address VARCHAR(255) NOT NULL,
+                email VARCHAR(255) NOT NULL,
+                basic_education JSON NOT NULL,
+                is_active BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        `;
+
+        const createStaffTable = `
+            CREATE TABLE IF NOT EXISTS staff (
+                id VARCHAR(36) PRIMARY KEY,
+                user_id VARCHAR(36) NOT NULL,
+                name VARCHAR(255) NOT NULL,
+                email VARCHAR(255) NOT NULL UNIQUE,
+                phone VARCHAR(255) NOT NULL,
+                address VARCHAR(500),
+                salary DECIMAL(10, 2) DEFAULT NULL,
+                salary_type ENUM('monthly', 'hourly') DEFAULT 'monthly',
+                gender ENUM('male', 'female', 'other') NOT NULL,
+                description TEXT,
+                role_id INT NOT NULL,
+                branch_id VARCHAR(36) NOT NULL,
+                class_id VARCHAR(36) DEFAULT NULL,
+                image_url VARCHAR(500),
+                status ENUM('Active', 'On Leave', 'Not Paid', 'Suspended', 'Terminated') NOT NULL DEFAULT 'Active',
+                salary_due_date DATE,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (role_id) REFERENCES roles(id),
+                FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE RESTRICT
+            )
+        `;
+
+        const createClassesTable = `
+            CREATE TABLE IF NOT EXISTS classes (
+                id VARCHAR(36) PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                branch_id VARCHAR(36) NOT NULL,
+                teacher_id VARCHAR(36) NOT NULL,
+                total_student INT DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE,
+                FOREIGN KEY (teacher_id) REFERENCES staff(id) ON DELETE RESTRICT
+            )
+        `;
+
+        const addStaffClassForeignKey = `
+            ALTER TABLE staff ADD CONSTRAINT fk_staff_class_id FOREIGN KEY (class_id) REFERENCES classes(id) ON DELETE SET NULL;
+        `;
+
         const createNewStudentTable = `
             CREATE TABLE IF NOT EXISTS new_students (
                 id VARCHAR(36) PRIMARY KEY,
@@ -81,30 +148,6 @@ async function initializeDatabase() {
                 FOREIGN KEY (parent_id) REFERENCES parents(id) ON DELETE CASCADE,
                 FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE,
                 FOREIGN KEY (class_id) REFERENCES classes(id) ON DELETE CASCADE
-            )
-        `;
-
-        const createSuperAdminsTable = `
-            CREATE TABLE IF NOT EXISTS super_admins (
-                id VARCHAR(36) PRIMARY KEY,
-                user_id VARCHAR(36) NOT NULL,
-                name VARCHAR(255) NOT NULL,
-                phone VARCHAR(255) NOT NULL,
-                image VARCHAR(255),
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users(id)
-            )
-        `;
-
-        const createBranchesTable = `
-            CREATE TABLE IF NOT EXISTS branches (
-                id VARCHAR(36) PRIMARY KEY,
-                school_name VARCHAR(255) NOT NULL,
-                address VARCHAR(255) NOT NULL,
-                email VARCHAR(255) NOT NULL,
-                basic_education JSON NOT NULL,
-                is_active BOOLEAN DEFAULT TRUE,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         `;
 
@@ -143,24 +186,6 @@ async function initializeDatabase() {
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         `;
-        
-        const createRevenueTable = `
-            CREATE TABLE IF NOT EXISTS revenue (
-                id VARCHAR(36) PRIMARY KEY,
-                student_id VARCHAR(36),
-                parent_id VARCHAR(36),
-                email VARCHAR(255) NOT NULL,
-                amount DECIMAL(10, 2) NOT NULL,
-                reference VARCHAR(255) NOT NULL UNIQUE,
-                status VARCHAR(50) NOT NULL,
-                payment_for VARCHAR(100) NOT NULL,
-                paid_at TIMESTAMP NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE SET NULL,
-                FOREIGN KEY (parent_id) REFERENCES parents(id) ON DELETE SET NULL
-            )
-        `;
-
 
         const createExpensesTable = `
             CREATE TABLE IF NOT EXISTS expenses (
@@ -181,51 +206,14 @@ async function initializeDatabase() {
             )
         `;
 
-        const createStaffTable = `
-            CREATE TABLE IF NOT EXISTS staff (
-                id VARCHAR(36) PRIMARY KEY,
-                user_id VARCHAR(36) NOT NULL,
-                name VARCHAR(255) NOT NULL,
-                email VARCHAR(255) NOT NULL UNIQUE,
-                phone VARCHAR(255) NOT NULL,
-                address VARCHAR(500),
-                salary DECIMAL(10, 2) DEFAULT NULL,
-                salary_type ENUM('monthly', 'hourly') DEFAULT 'monthly',
-                gender ENUM('male', 'female', 'other') NOT NULL,
-                description TEXT,
-                role_id INT NOT NULL,
-                branch_id VARCHAR(36) NOT NULL,
-                class_id VARCHAR(36) DEFAULT NULL,
-                image_url VARCHAR(500),
-                status ENUM('Active', 'On Leave', 'Not Paid', 'Suspended', 'Terminated') NOT NULL DEFAULT 'Active',
-                salary_due_date DATE,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-                FOREIGN KEY (role_id) REFERENCES roles(id),
-                FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE RESTRICT,
-                FOREIGN KEY (class_id) REFERENCES classes(id) ON DELETE SET NULL
-            )
-        `;
-
-        const createClassesTable = `
-            CREATE TABLE IF NOT EXISTS classes (
+        const createTermsTable = `
+            CREATE TABLE IF NOT EXISTS terms (
                 id VARCHAR(36) PRIMARY KEY,
                 name VARCHAR(255) NOT NULL,
-                branch_id VARCHAR(36) NOT NULL,
-                teacher_id VARCHAR(36) NOT NULL,
-                total_student INT DEFAULT 0,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE,
-                FOREIGN KEY (teacher_id) REFERENCES staff(id) ON DELETE RESTRICT
-            )
-        `;
-
-        const createClassroomsTable = `
-            CREATE TABLE IF NOT EXISTS classrooms (
-                id VARCHAR(36) PRIMARY KEY,
-                name VARCHAR(255) NOT NULL,
-                branch_id VARCHAR(36) NOT NULL,
+                branch_id VARCHAR(36),
+                start_date DATE NOT NULL,
+                end_date DATE NOT NULL,
+                is_active BOOLEAN DEFAULT FALSE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE
@@ -420,32 +408,18 @@ async function initializeDatabase() {
             )
         `;
 
-       const createStudentBookPurchasesTable = `
-    CREATE TABLE IF NOT EXISTS student_book_purchases (
-        id VARCHAR(36) PRIMARY KEY,
-        student_id VARCHAR(36) NOT NULL,
-        book_id VARCHAR(36) NOT NULL,
-        branch_id VARCHAR(36) NOT NULL,
-        price DECIMAL(10, 2) NOT NULL,
-        payment_status ENUM('Paid', 'Pending', 'Failed') NOT NULL,
-        purchase_method ENUM('Online', 'Cash') NOT NULL DEFAULT 'Online',
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
-        FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE,
-        FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE
-    )
-`;
-
-        const createTermsTable = `
-            CREATE TABLE IF NOT EXISTS terms (
+        const createStudentBookPurchasesTable = `
+            CREATE TABLE IF NOT EXISTS student_book_purchases (
                 id VARCHAR(36) PRIMARY KEY,
-                name VARCHAR(255) NOT NULL,
-                branch_id VARCHAR(36),
-                start_date DATE NOT NULL,
-                end_date DATE NOT NULL,
-                is_active BOOLEAN DEFAULT FALSE,
+                student_id VARCHAR(36) NOT NULL,
+                book_id VARCHAR(36) NOT NULL,
+                branch_id VARCHAR(36) NOT NULL,
+                price DECIMAL(10, 2) NOT NULL,
+                payment_status ENUM('Paid', 'Pending', 'Failed') NOT NULL,
+                purchase_method ENUM('Online', 'Cash') NOT NULL DEFAULT 'Online',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
+                FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE,
                 FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE
             )
         `;
@@ -490,101 +464,136 @@ async function initializeDatabase() {
                 FOREIGN KEY (term_id) REFERENCES terms(id) ON DELETE CASCADE
             )
         `;
-        
 
+        const createEbooksTable = `
+            CREATE TABLE IF NOT EXISTS ebooks (
+                id VARCHAR(36) PRIMARY KEY,
+                title VARCHAR(255) NOT NULL,
+                author VARCHAR(255) NOT NULL,
+                description TEXT,
+                cover_image_url VARCHAR(255),
+                ebook_url VARCHAR(255) NOT NULL,
+                branch_id VARCHAR(36) NOT NULL,
+                uploaded_by VARCHAR(36) NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE,
+                FOREIGN KEY (uploaded_by) REFERENCES users(id) ON DELETE CASCADE
+            )
+        `;
+
+        const createIllnessLogsTable = `
+            CREATE TABLE IF NOT EXISTS illness_logs (
+                id VARCHAR(36) PRIMARY KEY,
+                student_id VARCHAR(36) NOT NULL,
+                illness VARCHAR(255) NOT NULL,
+                symptoms TEXT NOT NULL,
+                treatment TEXT NOT NULL,
+                admitted_at DATETIME NOT NULL,
+                discharged_at DATETIME,
+                notes TEXT,
+                branch_id VARCHAR(36) NOT NULL,
+                logged_by VARCHAR(36) NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
+                FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE,
+                FOREIGN KEY (logged_by) REFERENCES users(id) ON DELETE CASCADE
+            )
+        `;
+
+        const createRevenueTable = `
+            CREATE TABLE IF NOT EXISTS revenue (
+                id VARCHAR(36) PRIMARY KEY,
+                student_id VARCHAR(36),
+                parent_id VARCHAR(36),
+                email VARCHAR(255) NOT NULL,
+                amount DECIMAL(10, 2) NOT NULL,
+                reference VARCHAR(255) NOT NULL UNIQUE,
+                status VARCHAR(50) NOT NULL,
+                payment_for VARCHAR(100) NOT NULL,
+                paid_at TIMESTAMP NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE SET NULL,
+                FOREIGN KEY (parent_id) REFERENCES parents(id) ON DELETE SET NULL
+            )
+        `;
+
+        // Create tables in the correct order
         await connection.query(createUsersTable);
         console.log("Users table created");
-
         await connection.query(createRolesTable);
         console.log("Roles table created");
-
         await connection.query(createUserRolesTable);
         console.log("User_roles table created");
-
         await connection.query(createParentsTable);
         console.log("Parents table created");
-
-        await connection.query(createNewStudentTable);
-        console.log("New Students table created");
-
         await connection.query(createSuperAdminsTable);
         console.log("Super Admins table created");
-
         await connection.query(createBranchesTable);
         console.log("Branches table created");
+        await connection.query(createStaffTable);
+        console.log("Staff table created (without FK to classes)");
+        await connection.query(createClassesTable);
+        console.log("Classes table created");
+        
+        // Add the foreign key constraint back to staff
+        try {
+            await connection.query(addStaffClassForeignKey);
+            console.log("Added foreign key from staff to classes");
+        } catch (fkError) {
+            if (fkError.code !== 'ER_FK_DUP_NAME') { // Ignore if the constraint already exists
+                throw fkError;
+            }
+            console.log("Foreign key from staff to classes already exists.");
+        }
 
         await connection.query(createStudentTable);
         console.log("Students table created");
-
+        await connection.query(createNewStudentTable);
+        console.log("New Students table created");
         await connection.query(createEventsTable);
         console.log("Events table created");
-
         await connection.query(createExpensesTable);
         console.log("Expenses table created");
-
-        await connection.query(createStaffTable);
-        console.log("Staff table created");
-
-        await connection.query(createClassesTable);
-        console.log("Classes table created");
-
-        await connection.query(createClassroomsTable);
-        console.log("Classrooms table created");
-
-        await connection.query(createExamsTable);
-        console.log("Exams table created");
-
-        await connection.query(createSubjectsTable);
-        console.log("Subjects table created");
-
-        await connection.query(createQuestionsTable);
-        console.log("Questions table created");
-
-        await connection.query(createExamResultsTable);
-        console.log("Exam results table created");
-
-        await connection.query(createTimetablesTable);
-        console.log("Timetables table created");
-
-        await connection.query(createAssignmentsTable);
-        console.log("Assignments table created");
-
-        await connection.query(createBroadcastsTable);
-        console.log("Broadcasts table created");
-
-        await connection.query(createBroadcastTagsTable);
-        console.log("Broadcast_tags table created");
-
-        await connection.query(createBroadcastCCTable);
-        console.log("Broadcast_cc table created");
-
-        await connection.query(createBroadcastReceiptsTable);
-        console.log("Broadcast_receipts table created");
-
-        await connection.query(createStaffAttendanceTable);
-        console.log("Staff attendance table created");
-
-        await connection.query(createStudentAttendanceTable);
-        console.log("Student attendance table created");
-
-        await connection.query(createBooksTable);
-        console.log("Books table created");
-
-        await connection.query(createStudentBookPurchasesTable);
-        console.log("Student book purchases table created");
-
         await connection.query(createTermsTable);
         console.log("Terms table created");
-
+        await connection.query(createExamsTable);
+        console.log("Exams table created");
+        await connection.query(createSubjectsTable);
+        console.log("Subjects table created");
+        await connection.query(createQuestionsTable);
+        console.log("Questions table created");
+        await connection.query(createExamResultsTable);
+        console.log("Exam results table created");
+        await connection.query(createTimetablesTable);
+        console.log("Timetables table created");
+        await connection.query(createAssignmentsTable);
+        console.log("Assignments table created");
+        await connection.query(createBroadcastsTable);
+        console.log("Broadcasts table created");
+        await connection.query(createBroadcastTagsTable);
+        console.log("Broadcast_tags table created");
+        await connection.query(createBroadcastCCTable);
+        console.log("Broadcast_cc table created");
+        await connection.query(createBroadcastReceiptsTable);
+        console.log("Broadcast_receipts table created");
+        await connection.query(createStaffAttendanceTable);
+        console.log("Staff attendance table created");
+        await connection.query(createStudentAttendanceTable);
+        console.log("Student attendance table created");
+        await connection.query(createBooksTable);
+        console.log("Books table created");
+        await connection.query(createStudentBookPurchasesTable);
+        console.log("Student book purchases table created");
         await connection.query(createFeesTable);
         console.log("Fees table created");
-
         await connection.query(createPaymentsTable);
         console.log("Payments table created");
-
         await connection.query(createStudentPaymentStatusTable);
         console.log("Student payment status table created");
-        
+        await connection.query(createEbooksTable);
+        console.log("Ebooks table created");
+        await connection.query(createIllnessLogsTable);
+        console.log("Illness logs table created");
         await connection.query(createRevenueTable);
         console.log("Revenue table created");
 

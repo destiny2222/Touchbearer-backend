@@ -11,13 +11,23 @@ const { v4: uuidv4 } = require('uuid');
 router.post('/', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => {
     const { title, description, cost, due_date, branch_id, expense_type } = req.body;
 
-    if (!title || !cost || !due_date || !branch_id || !expense_type) {
-        return res.status(400).json({ success: false, message: 'Please provide all required fields: title, cost, due_date, branch_id, and expense_type.' });
+    // --- START: ROBUST VALIDATION ---
+    if (!title || !due_date || !branch_id || !expense_type) {
+        return res.status(400).json({ success: false, message: 'Please provide title, due_date, branch_id, and expense_type.' });
     }
 
-    if (isNaN(parseFloat(cost)) || parseFloat(cost) <= 0) {
-        return res.status(400).json({ success: false, message: 'Cost must be a positive number.' });
+    // 1. Check if 'cost' was provided at all (handles undefined and null)
+    if (cost === undefined || cost === null) {
+        return res.status(400).json({ success: false, message: 'The cost field is required.' });
     }
+
+    // 2. Attempt to convert cost to a number and validate it
+    const numericCost = parseFloat(cost);
+
+    if (isNaN(numericCost) || numericCost < 0) {
+        return res.status(400).json({ success: false, message: 'Cost must be a valid non-negative number.' });
+    }
+    // --- END: ROBUST VALIDATION ---
 
     const connection = await pool.getConnection();
     try {
@@ -26,7 +36,7 @@ router.post('/', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) =>
         // Admin can only create expenses for their own branch
         if (req.user.roles.includes('Admin')) {
             const [adminStaff] = await connection.query('SELECT branch_id FROM staff WHERE user_id = ?', [req.user.id]);
-            if (adminStaff.length === 0 || adminStaff[0].branch_id !== branch_id) {
+            if (adminStaff.length === 0 || String(adminStaff[0].branch_id) !== String(branch_id)) { // Added String conversion for safety
                 await connection.rollback();
                 return res.status(403).json({ success: false, message: 'You can only create expenses for your own branch.' });
             }
@@ -36,7 +46,7 @@ router.post('/', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) =>
             id: uuidv4(),
             title,
             description: description || '',
-            cost: parseFloat(cost),
+            cost: numericCost, // Use the validated numeric cost
             due_date,
             branch_id,
             expense_type,
@@ -66,7 +76,7 @@ router.post('/', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) =>
         console.error('Error creating expense:', err);
         res.status(500).json({ success: false, message: 'Server error while creating expense.' });
     } finally {
-        connection.release();
+        if (connection) connection.release();
     }
 });
 

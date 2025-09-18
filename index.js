@@ -15,7 +15,6 @@ app.use('/api/branches', require('./routes/branches'));
 app.use('/api/expenses', require('./routes/expenses'));
 app.use('/api/staff', require('./routes/staff'));
 app.use('/api/classes', require('./routes/classes'));
-app.use('/api/classrooms', require('./routes/classrooms'));
 app.use('/api/exams', require('./routes/exams'));
 app.use('/api/enrollment', require('./routes/enrollment'));
 app.use('/api/parents', require('./routes/parents'));
@@ -30,6 +29,9 @@ app.use('/api/fees', require('./routes/fees'));
 app.use('/api/payments', require('./routes/payments'));
 app.use('/api/make-payment', require('./routes/make-payment'));
 app.use('/api/analytics', require('./routes/analytics'));
+app.use('/api/ai', require('./routes/aiSummary'));
+app.use('/api/library', require('./routes/library'));
+app.use('/api/hospital', require('./routes/hospital'));
 
 app.get('/', (req, res) => {
     res.json({ message: 'Hello World!' });

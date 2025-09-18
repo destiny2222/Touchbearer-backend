@@ -255,7 +255,7 @@ router.get('/performance', [auth, authorize(['SuperAdmin', 'Admin'])], async (re
             FROM student_attendance
             WHERE date BETWEEN CURDATE() - INTERVAL 6 DAY AND CURDATE()
             ${adminBranchId ? 'AND branch_id = ?' : ''}
-            GROUP BY day
+            GROUP BY day, date
             ORDER BY date;
         `;
         const lineChartParams = adminBranchId ? [adminBranchId] : [];
@@ -328,8 +328,8 @@ router.get('/analysis-page', [auth, authorize(['SuperAdmin', 'Admin'])], async (
             FROM revenue
             WHERE paid_at >= CURDATE() - INTERVAL 6 MONTH
             ${simpleBranchFilter.replace('WHERE', 'AND').replace('branch_id', 'student_id IN (SELECT id FROM students WHERE branch_id = ' + connection.escape(adminBranchId) + ')')}
-            GROUP BY month
-            ORDER BY paid_at;
+            GROUP BY YEAR(paid_at), MONTH(paid_at), month
+            ORDER BY YEAR(paid_at), MONTH(paid_at);
         `);
 
         // 5. School Population by Branch
