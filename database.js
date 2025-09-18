@@ -1,4 +1,6 @@
 const mysql = require('mysql2/promise');
+const bcrypt = require('bcryptjs');
+const { v4: uuidv4 } = require('uuid');
 require('dotenv').config();
 
 const pool = mysql.createPool({
@@ -618,6 +620,28 @@ async function initializeDatabase() {
             await connection.query('INSERT IGNORE INTO roles (name) VALUES (?)', [role]);
         }
         console.log("Roles inserted");
+
+        // Seed SuperAdmin
+        const superAdminEmail = 'gritindeveloper@gmail.com';
+        const [existingSuperAdmin] = await connection.query('SELECT id FROM users WHERE email = ?', [superAdminEmail]);
+
+        if (existingSuperAdmin.length === 0) {
+            const userId = uuidv4();
+            const password = 'torchbearer@4321';
+            const hashedPassword = await bcrypt.hash(password, 10);
+
+            await connection.query('INSERT INTO users (id, email, password) VALUES (?, ?, ?)', [userId, superAdminEmail, hashedPassword]);
+
+            const [superAdminRole] = await connection.query('SELECT id FROM roles WHERE name = ?', ['SuperAdmin']);
+            if (superAdminRole.length > 0) {
+                await connection.query('INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)', [userId, superAdminRole[0].id]);
+            }
+
+            const superAdminId = uuidv4();
+            await connection.query('INSERT INTO super_admins (id, user_id, name, phone) VALUES (?, ?, ?, ?)', [superAdminId, userId, 'Default Super Admin', '0000000000']);
+            
+            console.log('Default SuperAdmin created successfully.');
+        }
 
     } catch (err) {
         console.error("Database initialization error:", err);

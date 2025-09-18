@@ -91,7 +91,9 @@ router.post('/logs', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res
         await connection.rollback();
         console.error('Create illness log error:', error);
         res.status(500).json({ success: false, message: 'Server error while creating illness log.' });
-    } 
+    } finally {
+        if (connection) connection.release();
+    }
 });
 
 // @route   PUT /api/hospital/logs/:id
@@ -140,6 +142,8 @@ router.put('/logs/:id', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, 
         await connection.rollback();
         console.error('Update illness log error:', error);
         res.status(500).json({ success: false, message: 'Server error while updating illness log.' });
+    } finally {
+        if (connection) connection.release();
     }
 });
 
@@ -176,7 +180,9 @@ router.delete('/logs/:id', [auth, authorize(['Admin', 'SuperAdmin'])], async (re
         await connection.rollback();
         console.error('Delete illness log error:', error);
         res.status(500).json({ success: false, message: 'Server error while deleting illness log.' });
-    } 
+    } finally {
+        if (connection) connection.release();
+    }
 });
 
 // @route   POST /api/hospital/logs/:id/discharge
@@ -213,7 +219,37 @@ router.post('/logs/:id/discharge', [auth, authorize(['Admin', 'SuperAdmin'])], a
         await connection.rollback();
         console.error('Discharge student error:', error);
         res.status(500).json({ success: false, message: 'Server error while discharging student.' });
-    } 
+    } finally {
+        if (connection) connection.release();
+    }
+});
+
+// @route   GET /api/hospital/logs/my-children
+// @desc    Get all illness logs for the logged-in parent's children
+// @access  Parent
+router.get('/logs/my-children', [auth, authorize(['Parent'])], async (req, res) => {
+    const { id: userId } = req.user;
+
+    try {
+        const [parent] = await pool.query('SELECT id FROM parents WHERE user_id = ?', [userId]);
+        if (parent.length === 0) {
+            return res.status(403).json({ success: false, message: 'Forbidden. User is not a parent.' });
+        }
+        const parentId = parent[0].id;
+
+        const [children] = await pool.query('SELECT id FROM students WHERE parent_id = ?', [parentId]);
+        if (children.length === 0) {
+            return res.json({ success: true, data: [] });
+        }
+
+        const childrenIds = children.map(child => child.id);
+        const [logs] = await pool.query('SELECT * FROM illness_logs WHERE student_id IN (?) ORDER BY admitted_at DESC', [childrenIds]);
+        res.json({ success: true, data: logs });
+
+    } catch (err) {
+        console.error('Error fetching student illness logs:', err);
+        res.status(500).json({ success: false, message: 'Server error while fetching illness logs.' });
+    }
 });
 
 module.exports = router;
