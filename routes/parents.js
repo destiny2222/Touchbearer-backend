@@ -1,11 +1,76 @@
-// backend/routes/parents.js
-
 const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
 const pool = require('../database');
 const auth = require('../middleware/auth');
 const authorize = require('../middleware/authorize');
+const { v4: uuidv4 } = require('uuid');
+
+// @route   POST /api/parents
+// @desc    Create a new parent
+// @access  Admin, SuperAdmin
+router.post('/', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => {
+    const { name, email, phone } = req.body;
+
+    if (!name || !email || !phone) {
+        return res.status(400).json({ success: false, message: 'Name, email, and phone are required.' });
+    }
+
+    const connection = await pool.getConnection();
+    try {
+        await connection.beginTransaction();
+
+        // Check if user already exists
+        const [existingUser] = await connection.query('SELECT id FROM users WHERE email = ?', [email]);
+        if (existingUser.length > 0) {
+            await connection.rollback();
+            return res.status(400).json({ success: false, message: 'A user with this email already exists.' });
+        }
+
+        // Create a new user
+        const userId = uuidv4();
+        const password = generatePassword();
+        const hashedPassword = await bcrypt.hash(password, 10);
+        await connection.query('INSERT INTO users (id, email, password) VALUES (?, ?, ?)', [userId, email, hashedPassword]);
+
+        // Assign Parent role
+        const [parentRole] = await connection.query('SELECT id FROM roles WHERE name = ?', ['Parent']);
+        if (parentRole.length === 0) {
+            await connection.rollback();
+            return res.status(500).json({ success: false, message: 'Parent role not found.' });
+        }
+        await connection.query('INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)', [userId, parentRole[0].id]);
+
+        // Create the parent profile
+        const parentId = uuidv4();
+        const newParent = {
+            id: parentId,
+            user_id: userId,
+            name,
+            phone,
+            email
+        };
+        await connection.query('INSERT INTO parents SET ?', newParent);
+
+        await connection.commit();
+
+        res.status(201).json({
+            success: true,
+            message: 'Parent created successfully.',
+            data: {
+                ...newParent,
+                temporaryPassword: password
+            }
+        });
+
+    } catch (error) {
+        await connection.rollback();
+        console.error('Create parent error:', error);
+        res.status(500).json({ success: false, message: 'Server error while creating parent.' });
+    } finally {
+        connection.release();
+    }
+});
 
 function generatePassword() {
     const length = 10;
