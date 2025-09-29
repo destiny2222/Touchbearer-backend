@@ -3,24 +3,44 @@ const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
 require('dotenv').config();
 
-const pool = mysql.createPool({
-    connectionLimit: 100,
+const dbConfig = {
     host: process.env.DB_HOST,
     user: process.env.DB_USER,
     password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME,
-    port: process.env.DB_PORT
+    port: process.env.DB_PORT,
+};
+
+const dbName = process.env.DB_NAME;
+
+// Create a connection pool without specifying the database
+const pool = mysql.createPool({
+    connectionLimit: 100,
+    ...dbConfig,
 });
-
-async function runMigrations(connection) {
-
-}
 
 async function initializeDatabase() {
     let connection;
     try {
-        connection = await pool.getConnection();
-        console.log("Connected to database!");
+        // Get a connection from the pool
+        connection = await mysql.createConnection(dbConfig);
+        console.log("Connected to MySQL server!");
+
+        // Create the database if it doesn't exist
+        await connection.query(`CREATE DATABASE IF NOT EXISTS \`${dbName}\``);
+        console.log(`Database "${dbName}" created or already exists.`);
+        
+        // Close the initial connection
+        await connection.end();
+
+        // Re-create the pool with the database name
+        const poolWithDb = mysql.createPool({
+            connectionLimit: 100,
+            ...dbConfig,
+            database: dbName,
+        });
+
+        connection = await poolWithDb.getConnection();
+        console.log(`Connected to database "${dbName}"!`);
 
         const createUsersTable = `
             CREATE TABLE IF NOT EXISTS users (
