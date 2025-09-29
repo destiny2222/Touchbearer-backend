@@ -2,7 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const app = express();
-const con = require('./database');
+const { initializeDatabase } = require('./database');
 
 app.use(cors());
 app.use(express.json());
@@ -39,6 +39,10 @@ app.get('/', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-    console.log(`Node server running on port ${PORT}`);
+
+// Start the server after the database is initialized
+initializeDatabase().then(() => {
+    app.listen(PORT, () => {
+        console.log(`Node server running on port ${PORT}`);
+    });
 });
