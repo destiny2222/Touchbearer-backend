@@ -1,8 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { v4: uuidv4 } = require('uuid');
-const pool = require('../database');
-const auth = require('../middleware/auth');
+const { pool } = require('../database');const auth = require('../middleware/auth');
 const authorize = require('../middleware/authorize');
 
 // Helper function to get a staff member's branch ID from their user ID

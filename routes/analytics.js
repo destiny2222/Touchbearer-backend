@@ -2,8 +2,7 @@
 
 const express = require('express');
 const router = express.Router();
-const pool = require('../database');
-const auth = require('../middleware/auth');
+const { pool } = require('../database');const auth = require('../middleware/auth');
 const authorize = require('../middleware/authorize');
 
 // GET /api/analytics/summary - Get aggregated data for all dashboard charts

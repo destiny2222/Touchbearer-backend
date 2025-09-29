@@ -1,6 +1,5 @@
 const jwt = require('jsonwebtoken');
-const pool = require('../database');
-
+const { pool } = require('../database');
 module.exports = async function(req, res, next) {
     const token = req.header('x-auth-token');
     console.log("Authenticating a users...");

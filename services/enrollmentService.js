@@ -1,7 +1,6 @@
 const { v4: uuidv4 } = require('uuid');
 const bcrypt = require('bcryptjs');
-const pool = require('../database');
-
+const { pool } = require('../database');
 // Helper to generate a unique student ID
 async function generateStudentId() {
     const prefix = 'ttb';

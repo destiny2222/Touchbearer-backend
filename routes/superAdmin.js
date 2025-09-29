@@ -1,8 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
-const pool = require('../database');
-const { v4: uuidv4 } = require('uuid');
+const { pool } = require('../database');const { v4: uuidv4 } = require('uuid');
 
 router.post('/register', async (req, res) => {
     const { email, password, name, phone, image } = req.body;
