@@ -43,14 +43,14 @@ async function createNewStudentFromEnrollment(formData) {
             const tempParentPassword = generatePassword();
             const hashedParentPassword = await bcrypt.hash(tempParentPassword, 10);
             await connection.query('INSERT INTO users (id, email, password) VALUES (?, ?, ?)', [parentUserId, formData.parent_email, hashedParentPassword]);
-            
+
             const [parentRole] = await connection.query("SELECT id FROM roles WHERE name = 'Parent'");
             await connection.query('INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)', [parentUserId, parentRole[0].id]);
-            
+
             parent_id = uuidv4();
             await connection.query('INSERT INTO parents (id, user_id, name, phone, email) VALUES (?, ?, ?, ?, ?)', [parent_id, parentUserId, formData.parent_name, formData.parent_phone, formData.parent_email]);
         }
-        
+
         // Step 2: Create User for New Student
         const student_id = await generateStudentId();
         const temporary_password = generatePassword();
@@ -68,16 +68,51 @@ async function createNewStudentFromEnrollment(formData) {
             parent_id,
             first_name: formData.first_name,
             last_name: formData.last_name,
+            other_names: formData.other_names || null,
+            surname_name: formData.surname_name || null,
+            gender: formData.gender || null,
             dob: formData.dob,
-            passport: formData.passport, // This now comes from the metadata
+            place_of_birth: formData.place_of_birth || null,
+            passport: formData.passport,
             address: formData.address,
             nationality: formData.nationality,
             state: formData.state,
+            tribe: formData.tribe || null,
+            lga: formData.lga || null,
             class_id: formData.class_id,
             branch_id: formData.branch_id,
-            previous_school: formData.previous_school,
+            previous_school: formData.previous_school || null,
+            previous_class_result: formData.previous_class_result || null,
             religion: formData.religion,
+            blood_group: formData.blood_group || null,
+            genotype: formData.genotype || null,
+            allergies: formData.allergies || null,
             disability: formData.disability || null,
+            expelled_or_suspended: formData.expelled_or_suspended || 'no',
+            offence_details: formData.offence_details || null,
+            applicant_type: formData.applicant_type || 'parent',
+            parent_residential_address: formData.parent_residential_address || null,
+            father_name: formData.father_name || null,
+            father_phone: formData.father_phone || null,
+            father_dob: formData.father_dob || null,
+            father_occupation: formData.father_occupation || null,
+            father_workplace_address: formData.father_workplace_address || null,
+            mother_name: formData.mother_name || null,
+            mother_phone: formData.mother_phone || null,
+            mother_dob: formData.mother_dob || null,
+            mother_occupation: formData.mother_occupation || null,
+            mother_workplace_address: formData.mother_workplace_address || null,
+            guardian_name: formData.guardian_name || null,
+            guardian_residential_address: formData.guardian_residential_address || null,
+            guardian_phone: formData.guardian_phone || null,
+            guardian_dob: formData.guardian_dob || null,
+            guardian_occupation: formData.guardian_occupation || null,
+            guardian_workplace_address: formData.guardian_workplace_address || null,
+            guardian_email: formData.guardian_email || null,
+            emergency_contact_name: formData.emergency_contact_name || null,
+            emergency_contact_address: formData.emergency_contact_address || null,
+            emergency_contact_relationship: formData.emergency_contact_relationship || null,
+            emergency_contact_phone: formData.emergency_contact_phone || null,
             payment_status: 'paid',
         };
         await connection.query('INSERT INTO new_students SET ?', newStudentData);

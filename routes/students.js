@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
 const { v4: uuidv4 } = require('uuid');
-const { pool } = require('../database');const auth = require('../middleware/auth');
+const { pool } = require('../database'); const auth = require('../middleware/auth');
 const authorize = require('../middleware/authorize');
 
 async function getAdminBranchId(userId) {
@@ -38,7 +38,10 @@ router.post('/create', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, r
     const {
         first_name, last_name, dob, passport, address, nationality, state,
         class_id, branch_id, religion, disability,
-        parent_email, parent_phone, parent_name
+        parent_email, parent_phone, parent_name,
+        // New fields
+        surname_name, other_names, gender, place_of_birth, lga, tribe,
+        blood_group, genotype, allergies
     } = req.body;
 
     if (!first_name || !last_name || !dob || !class_id || !branch_id || (!parent_email && !parent_phone)) {
@@ -118,15 +121,24 @@ router.post('/create', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, r
                 parent_id,
                 first_name,
                 last_name,
+                surname_name: surname_name || null,
+                other_names: other_names || null,
+                gender: gender || null,
                 dob,
+                place_of_birth: place_of_birth || null,
                 passport: passport || null,
                 address,
                 nationality,
                 state,
+                lga: lga || null,
+                tribe: tribe || null,
                 class_id,
                 branch_id,
                 religion,
-                disability: disability || null
+                disability: disability || null,
+                blood_group: blood_group || null,
+                genotype: genotype || null,
+                allergies: allergies || null
             };
             await connection.query('INSERT INTO students SET ?', studentData);
 
@@ -610,7 +622,7 @@ router.get('/me', [auth, authorize(['Student', 'NewStudent'])], async (req, res)
                 LEFT JOIN classes c ON ns.class_id = c.id
                 WHERE u.id = ?
             `, [req.user.id]);
-            
+
             if (newUserRows.length > 0) {
                 studentProfile = newUserRows[0];
             }
@@ -635,7 +647,7 @@ router.get('/me', [auth, authorize(['Student', 'NewStudent'])], async (req, res)
 router.get('/me/stats', [auth, authorize(['Student', 'NewStudent'])], async (req, res) => {
     try {
         const [student] = await pool.query(
-            'SELECT id, class_id, branch_id FROM students WHERE user_id = ?', 
+            'SELECT id, class_id, branch_id FROM students WHERE user_id = ?',
             [req.user.id]
         );
 
@@ -673,15 +685,15 @@ router.get('/me/stats', [auth, authorize(['Student', 'NewStudent'])], async (req
             `SELECT COUNT(DISTINCT date) as total_days FROM student_attendance WHERE class_id = ? AND date BETWEEN ? AND ?`,
             [class_id, term.start_date, effectiveEndDate]
         );
-        
+
         const attended_days = present_days + late_days;
         const attendance = total_school_days > 0 ? `${attended_days}/${total_school_days} Days` : 'N/A';
-        
+
         // Calculate punctuality
-        const punctuality = attended_days > 0 
+        const punctuality = attended_days > 0
             ? `${Math.round((present_days / attended_days) * 100)}%`
             : 'N/A';
-        
+
         res.json({ success: true, data: { attendance, punctuality } });
 
     } catch (error) {

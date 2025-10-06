@@ -28,7 +28,7 @@ async function initializeDatabase() {
         // Create the database if it doesn't exist
         await connection.query(`CREATE DATABASE IF NOT EXISTS \`${dbName}\``);
         console.log(`Database "${dbName}" created or already exists.`);
-        
+
         // Close the initial connection
         await connection.end();
 
@@ -104,6 +104,17 @@ async function initializeDatabase() {
             )
         `;
 
+        const createBranchLocationsTable = `
+            CREATE TABLE IF NOT EXISTS branch_locations (
+                branch_id VARCHAR(36) NOT NULL PRIMARY KEY,
+                latitude DECIMAL(9,6) NOT NULL,
+                longitude DECIMAL(9,6) NOT NULL,
+                radius_meters INT NOT NULL DEFAULT 200,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE
+            )
+        `;
+
         const createStaffTable = `
             CREATE TABLE IF NOT EXISTS staff (
                 id VARCHAR(36) PRIMARY KEY,
@@ -154,16 +165,51 @@ async function initializeDatabase() {
                 parent_id VARCHAR(36) NOT NULL,
                 first_name VARCHAR(255) NOT NULL,
                 last_name VARCHAR(255) NOT NULL,
+                other_names VARCHAR(255),
+                surname_name VARCHAR(255),
+                gender ENUM('male','female','other'),
                 dob DATE NOT NULL,
+                place_of_birth VARCHAR(255),
                 passport VARCHAR(255) NOT NULL,
                 address VARCHAR(255) NOT NULL,
                 nationality VARCHAR(255) NOT NULL,
                 state VARCHAR(255) NOT NULL,
+                tribe VARCHAR(255),
+                lga VARCHAR(255),
                 class_id VARCHAR(36) NOT NULL,
                 branch_id VARCHAR(36) NOT NULL,
                 previous_school VARCHAR(255),
+                previous_class_result VARCHAR(255),
                 religion VARCHAR(255) NOT NULL,
+                blood_group VARCHAR(5),
+                genotype VARCHAR(5),
+                allergies VARCHAR(255),
                 disability VARCHAR(255),
+                expelled_or_suspended ENUM('yes','no') DEFAULT 'no',
+                offence_details TEXT,
+                applicant_type ENUM('parent','guardian','self') DEFAULT 'parent',
+                parent_residential_address VARCHAR(255),
+                father_name VARCHAR(255),
+                father_phone VARCHAR(50),
+                father_dob DATE,
+                father_occupation VARCHAR(255),
+                father_workplace_address VARCHAR(255),
+                mother_name VARCHAR(255),
+                mother_phone VARCHAR(50),
+                mother_dob DATE,
+                mother_occupation VARCHAR(255),
+                mother_workplace_address VARCHAR(255),
+                guardian_name VARCHAR(255),
+                guardian_residential_address VARCHAR(255),
+                guardian_phone VARCHAR(50),
+                guardian_dob DATE,
+                guardian_occupation VARCHAR(255),
+                guardian_workplace_address VARCHAR(255),
+                guardian_email VARCHAR(255),
+                emergency_contact_name VARCHAR(255),
+                emergency_contact_address VARCHAR(255),
+                emergency_contact_relationship VARCHAR(255),
+                emergency_contact_phone VARCHAR(50),
                 score INT DEFAULT 0,
                 payment_status VARCHAR(255) NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -180,15 +226,24 @@ async function initializeDatabase() {
                 parent_id VARCHAR(36) NOT NULL,
                 first_name VARCHAR(255) NOT NULL,
                 last_name VARCHAR(255) NOT NULL,
+                surname_name VARCHAR(255),
+                other_names VARCHAR(255),
+                gender ENUM('male','female','other'),
                 dob DATE NOT NULL,
+                place_of_birth VARCHAR(255),
                 passport VARCHAR(255),
                 address VARCHAR(255),
                 nationality VARCHAR(255),
                 state VARCHAR(255),
+                lga VARCHAR(255),
+                tribe VARCHAR(255),
                 class_id VARCHAR(36) NOT NULL,
                 branch_id VARCHAR(36) NOT NULL,
                 religion VARCHAR(255),
                 disability VARCHAR(255),
+                blood_group VARCHAR(5),
+                genotype VARCHAR(5),
+                allergies VARCHAR(255),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
                 FOREIGN KEY (parent_id) REFERENCES parents(id) ON DELETE RESTRICT,
@@ -242,7 +297,7 @@ async function initializeDatabase() {
             )
         `;
 
-         const createInventoryTable = `
+        const createInventoryTable = `
             CREATE TABLE IF NOT EXISTS inventory (
                 id VARCHAR(36) PRIMARY KEY,
                 name VARCHAR(255) NOT NULL,
@@ -412,6 +467,26 @@ async function initializeDatabase() {
             )
         `;
 
+        const createStaffAttendanceLogsTable = `
+            CREATE TABLE IF NOT EXISTS staff_attendance_logs (
+                id VARCHAR(36) PRIMARY KEY,
+                staff_id VARCHAR(36) NOT NULL,
+                branch_id VARCHAR(36) NOT NULL,
+                date DATE NOT NULL,
+                clock_in_time DATETIME NULL,
+                clock_out_time DATETIME NULL,
+                clock_in_latitude DECIMAL(9,6) NULL,
+                clock_in_longitude DECIMAL(9,6) NULL,
+                clock_out_latitude DECIMAL(9,6) NULL,
+                clock_out_longitude DECIMAL(9,6) NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY uniq_staff_date (staff_id, date),
+                FOREIGN KEY (staff_id) REFERENCES staff(id) ON DELETE CASCADE,
+                FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE
+            )
+        `;
+
         const createStudentAttendanceTable = `
             CREATE TABLE IF NOT EXISTS student_attendance (
                 id VARCHAR(36) PRIMARY KEY,
@@ -566,11 +641,13 @@ async function initializeDatabase() {
         console.log("Super Admins table created");
         await connection.query(createBranchesTable);
         console.log("Branches table created");
+        await connection.query(createBranchLocationsTable);
+        console.log("Branch locations table created");
         await connection.query(createStaffTable);
         console.log("Staff table created (without FK to classes)");
         await connection.query(createClassesTable);
         console.log("Classes table created");
-        
+
         // Add the foreign key constraint back to staff
         try {
             await connection.query(addStaffClassForeignKey);
@@ -614,6 +691,8 @@ async function initializeDatabase() {
         console.log("Broadcast_receipts table created");
         await connection.query(createStaffAttendanceTable);
         console.log("Staff attendance table created");
+        await connection.query(createStaffAttendanceLogsTable);
+        console.log("Staff attendance logs table created");
         await connection.query(createStudentAttendanceTable);
         console.log("Student attendance table created");
         await connection.query(createBooksTable);
@@ -659,7 +738,7 @@ async function initializeDatabase() {
 
             const superAdminId = uuidv4();
             await connection.query('INSERT INTO super_admins (id, user_id, name, phone) VALUES (?, ?, ?, ?)', [superAdminId, userId, 'Default Super Admin', '0000000000']);
-            
+
             console.log('Default SuperAdmin created successfully.');
         }
 

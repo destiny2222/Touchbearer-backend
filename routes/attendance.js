@@ -1,8 +1,9 @@
 const express = require('express');
 const router = express.Router();
-const { pool } = require('../database');const { v4: uuidv4 } = require('uuid');
+const { pool } = require('../database'); const { v4: uuidv4 } = require('uuid');
 const auth = require('../middleware/auth');
 const authorize = require('../middleware/authorize');
+const crypto = require('crypto');
 
 router.post('/staff', auth, authorize(['SuperAdmin', 'Admin']), async (req, res) => {
     const { staff_id, branch_id, date, status } = req.body;
@@ -76,6 +77,138 @@ router.get('/staff', auth, authorize(['SuperAdmin', 'Admin']), async (req, res) 
     } catch (error) {
         console.error('Error fetching staff attendance:', error);
         res.status(500).json({ success: false, message: 'Server error' });
+    }
+});
+
+// Get attendance for all staff for a particular day (joins logs for times)
+router.get('/staff/day', auth, authorize(['SuperAdmin', 'Admin']), async (req, res) => {
+    const { date, branch_id } = req.query || {};
+
+    if (!date) {
+        return res.status(400).json({ success: false, message: 'Missing required query param: date (YYYY-MM-DD)' });
+    }
+
+    const connection = await pool.getConnection();
+    try {
+        let where = '';
+        const params = [date, date];
+
+        if (req.user.roles.includes('Admin')) {
+            const [adminStaff] = await connection.query('SELECT branch_id FROM staff WHERE user_id = ?', [req.user.id]);
+            if (adminStaff.length === 0) {
+                return res.status(403).json({ success: false, message: 'Admin branch not found' });
+            }
+            where = ' WHERE s.branch_id = ?';
+            params.push(adminStaff[0].branch_id);
+        } else if (branch_id) {
+            where = ' WHERE s.branch_id = ?';
+            params.push(branch_id);
+        }
+
+        const query = `
+            SELECT s.id AS staff_id, s.name AS staff_name, s.branch_id,
+                   sa.status, sa.date,
+                   l.clock_in_time, l.clock_out_time
+            FROM staff s
+            LEFT JOIN staff_attendance sa ON sa.staff_id = s.id AND sa.date = ?
+            LEFT JOIN staff_attendance_logs l ON l.staff_id = s.id AND l.date = ?
+            ${where}
+            ORDER BY s.name ASC
+        `;
+
+        const [rows] = await connection.query(query, params);
+        return res.json({ success: true, data: rows });
+    } catch (error) {
+        console.error('Error fetching day attendance:', error);
+        return res.status(500).json({ success: false, message: 'Server error' });
+    } finally {
+        if (connection) connection.release();
+    }
+});
+
+// Get monthly attendance for the authenticated staff
+router.get('/staff/me/month', auth, authorize(['Teacher', 'NonTeachingStaff', 'Admin', 'SuperAdmin']), async (req, res) => {
+    const year = Number(req.query.year);
+    const month = Number(req.query.month); // 1-12
+    if (!year || !month || month < 1 || month > 12) {
+        return res.status(400).json({ success: false, message: 'Provide valid year and month (1-12)' });
+    }
+
+    const start = new Date(year, month - 1, 1);
+    const end = new Date(year, month, 0);
+    const startStr = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')}`;
+    const endStr = `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, '0')}-${String(end.getDate()).padStart(2, '0')}`;
+
+    const connection = await pool.getConnection();
+    try {
+        const [staffRows] = await connection.query('SELECT id, branch_id FROM staff WHERE user_id = ?', [req.user.id]);
+        if (staffRows.length === 0) {
+            return res.status(404).json({ success: false, message: 'Staff profile not found' });
+        }
+        const staffId = staffRows[0].id;
+
+        const query = `
+            SELECT sa.date, sa.status,
+                   l.clock_in_time, l.clock_out_time
+            FROM staff_attendance sa
+            LEFT JOIN staff_attendance_logs l ON l.staff_id = sa.staff_id AND l.date = sa.date
+            WHERE sa.staff_id = ? AND sa.date BETWEEN ? AND ?
+            ORDER BY sa.date ASC
+        `;
+
+        const [rows] = await connection.query(query, [staffId, startStr, endStr]);
+        return res.json({ success: true, data: rows, staff_id: staffId, year, month });
+    } catch (error) {
+        console.error('Error fetching monthly attendance (me):', error);
+        return res.status(500).json({ success: false, message: 'Server error' });
+    } finally {
+        if (connection) connection.release();
+    }
+});
+
+// Get monthly attendance for a specific staff (Admin/SuperAdmin)
+router.get('/staff/:staffId/month', auth, authorize(['Admin', 'SuperAdmin']), async (req, res) => {
+    const { staffId } = req.params;
+    const year = Number(req.query.year);
+    const month = Number(req.query.month); // 1-12
+    if (!staffId || !year || !month || month < 1 || month > 12) {
+        return res.status(400).json({ success: false, message: 'Provide staffId, year and month (1-12)' });
+    }
+
+    const start = new Date(year, month - 1, 1);
+    const end = new Date(year, month, 0);
+    const startStr = `${start.getFullYear()}-${String(start.getMonth() + 1).padStart(2, '0')}-${String(start.getDate()).padStart(2, '0')}`;
+    const endStr = `${end.getFullYear()}-${String(end.getMonth() + 1).padStart(2, '0')}-${String(end.getDate()).padStart(2, '0')}`;
+
+    const connection = await pool.getConnection();
+    try {
+        if (req.user.roles.includes('Admin')) {
+            // Ensure staff belongs to admin branch
+            const [adminStaff] = await connection.query('SELECT branch_id FROM staff WHERE user_id = ?', [req.user.id]);
+            if (adminStaff.length === 0) {
+                return res.status(403).json({ success: false, message: 'Admin branch not found' });
+            }
+            const [staffBranch] = await connection.query('SELECT branch_id FROM staff WHERE id = ?', [staffId]);
+            if (staffBranch.length === 0 || staffBranch[0].branch_id !== adminStaff[0].branch_id) {
+                return res.status(403).json({ success: false, message: 'You can only view staff in your branch' });
+            }
+        }
+
+        const query = `
+            SELECT sa.date, sa.status,
+                   l.clock_in_time, l.clock_out_time
+            FROM staff_attendance sa
+            LEFT JOIN staff_attendance_logs l ON l.staff_id = sa.staff_id AND l.date = sa.date
+            WHERE sa.staff_id = ? AND sa.date BETWEEN ? AND ?
+            ORDER BY sa.date ASC
+        `;
+        const [rows] = await connection.query(query, [staffId, startStr, endStr]);
+        return res.json({ success: true, data: rows, staff_id: staffId, year, month });
+    } catch (error) {
+        console.error('Error fetching monthly attendance (by staff):', error);
+        return res.status(500).json({ success: false, message: 'Server error' });
+    } finally {
+        if (connection) connection.release();
     }
 });
 
@@ -217,6 +350,122 @@ router.get('/student', auth, authorize(['SuperAdmin', 'Admin', 'Teacher']), asyn
     } catch (error) {
         console.error('Error fetching student attendance:', error);
         res.status(500).json({ success: false, message: 'Server error' });
+    }
+});
+
+// Geofenced staff clock-in/out via QR validation
+router.post('/staff/clock', auth, authorize(['Teacher', 'Admin', 'SuperAdmin', 'NonTeachingStaff']), async (req, res) => {
+    const { action, qrCodeData, location } = req.body || {};
+
+    if (!action || !qrCodeData || !location || typeof location.latitude !== 'number' || typeof location.longitude !== 'number') {
+        return res.status(400).json({ success: false, message: 'Missing or invalid fields: action, qrCodeData, location{latitude,longitude}' });
+    }
+
+    const normalizedAction = String(action).toLowerCase();
+    if (!['clock-in', 'clock-out'].includes(normalizedAction)) {
+        return res.status(400).json({ success: false, message: 'action must be "clock-in" or "clock-out"' });
+    }
+
+    // Validate QR secret
+    const expectedSecret = process.env.STAFF_QR_SECRET;
+    if (!expectedSecret) {
+        return res.status(500).json({ success: false, message: 'QR secret not configured' });
+    }
+    const secretsEqual = crypto.timingSafeEqual(Buffer.from(qrCodeData), Buffer.from(expectedSecret));
+    if (!secretsEqual) {
+        return res.status(401).json({ success: false, message: 'Invalid QR code' });
+    }
+
+    const connection = await pool.getConnection();
+    try {
+        // Find staff and branch
+        const [staffRows] = await connection.query('SELECT id, branch_id FROM staff WHERE user_id = ?', [req.user.id]);
+        if (staffRows.length === 0) {
+            return res.status(404).json({ success: false, message: 'Staff profile not found' });
+        }
+        const staffId = staffRows[0].id;
+        const branchId = staffRows[0].branch_id;
+
+        // Geofence: get branch coordinates
+        const [locRows] = await connection.query('SELECT latitude, longitude, radius_meters FROM branch_locations WHERE branch_id = ?', [branchId]);
+        if (locRows.length === 0) {
+            return res.status(400).json({ success: false, message: 'Branch geofence not configured' });
+        }
+        const { latitude: brLat, longitude: brLng, radius_meters: radiusMeters } = locRows[0];
+
+        // Haversine distance in meters
+        function haversineMeters(lat1, lon1, lat2, lon2) {
+            const R = 6371000; // meters
+            const toRad = (d) => d * Math.PI / 180;
+            const dLat = toRad(lat2 - lat1);
+            const dLon = toRad(lon2 - lon1);
+            const a = Math.sin(dLat / 2) * Math.sin(dLat / 2) + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) * Math.sin(dLon / 2);
+            const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+            return R * c;
+        }
+
+        const distance = haversineMeters(location.latitude, location.longitude, Number(brLat), Number(brLng));
+        const maxRadius = Number(process.env.STAFF_CLOCK_RADIUS_METERS || radiusMeters || 200);
+        if (distance > maxRadius) {
+            return res.status(403).json({ success: false, message: 'User not around school location', distance_m: Math.round(distance), allowed_radius_m: maxRadius });
+        }
+
+        // Determine date (server local date)
+        const now = new Date();
+        const yyyy = now.getFullYear();
+        const mm = String(now.getMonth() + 1).padStart(2, '0');
+        const dd = String(now.getDate()).padStart(2, '0');
+        const today = `${yyyy}-${mm}-${dd}`;
+
+        // Upsert on staff_attendance_logs unique (staff_id, date)
+        const [rows] = await connection.query('SELECT id, clock_in_time, clock_out_time FROM staff_attendance_logs WHERE staff_id = ? AND date = ?', [staffId, today]);
+
+        if (normalizedAction === 'clock-in') {
+            if (rows.length > 0 && rows[0].clock_in_time) {
+                return res.status(409).json({ success: false, message: 'Already clocked in today' });
+            }
+
+            if (rows.length === 0) {
+                const id = uuidv4();
+                await connection.query(
+                    'INSERT INTO staff_attendance_logs (id, staff_id, branch_id, date, clock_in_time, clock_in_latitude, clock_in_longitude) VALUES (?, ?, ?, ?, NOW(), ?, ?)',
+                    [id, staffId, branchId, today, location.latitude, location.longitude]
+                );
+            } else {
+                await connection.query(
+                    'UPDATE staff_attendance_logs SET clock_in_time = NOW(), clock_in_latitude = ?, clock_in_longitude = ? WHERE id = ?',
+                    [location.latitude, location.longitude, rows[0].id]
+                );
+            }
+
+            // Ensure a Present record in staff_attendance (idempotent per date)
+            const [existingAttendance] = await connection.query('SELECT id FROM staff_attendance WHERE staff_id = ? AND date = ?', [staffId, today]);
+            if (existingAttendance.length === 0) {
+                await connection.query('INSERT INTO staff_attendance (id, staff_id, branch_id, date, status) VALUES (?, ?, ?, ?, ?)', [uuidv4(), staffId, branchId, today, 'Present']);
+            }
+
+            return res.json({ success: true, message: 'Clock-in recorded', date: today });
+        } else {
+            // clock-out
+            if (rows.length === 0 || !rows[0].clock_in_time) {
+                return res.status(400).json({ success: false, message: 'You must clock-in before clocking out' });
+            }
+            if (rows[0].clock_out_time) {
+                return res.status(409).json({ success: false, message: 'Already clocked out today' });
+            }
+
+            await connection.query(
+                'UPDATE staff_attendance_logs SET clock_out_time = NOW(), clock_out_latitude = ?, clock_out_longitude = ? WHERE id = ?',
+                [location.latitude, location.longitude, rows[0].id]
+            );
+
+            return res.json({ success: true, message: 'Clock-out recorded', date: today });
+        }
+    } catch (error) {
+        console.error('Error in staff clock route:', error);
+        return res.status(500).json({ success: false, message: 'Server error' });
+    } finally {
+        if (connection) connection.release();
     }
 });
 
