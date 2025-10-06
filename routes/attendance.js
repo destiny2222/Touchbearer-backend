@@ -386,12 +386,10 @@ router.post('/staff/clock', auth, authorize(['Teacher', 'Admin', 'SuperAdmin', '
         const staffId = staffRows[0].id;
         const branchId = staffRows[0].branch_id;
 
-        // Geofence: get branch coordinates
-        const [locRows] = await connection.query('SELECT latitude, longitude, radius_meters FROM branch_locations WHERE branch_id = ?', [branchId]);
-        if (locRows.length === 0) {
-            return res.status(400).json({ success: false, message: 'Branch geofence not configured' });
-        }
-        const { latitude: brLat, longitude: brLng, radius_meters: radiusMeters } = locRows[0];
+        // Hardcoded school coordinates (geofence validation disabled)
+        const schoolLat = 6.309565;
+        const schoolLng = 5.602922;
+        const maxRadius = 200; // meters
 
         // Haversine distance in meters
         function haversineMeters(lat1, lon1, lat2, lon2) {
@@ -404,8 +402,7 @@ router.post('/staff/clock', auth, authorize(['Teacher', 'Admin', 'SuperAdmin', '
             return R * c;
         }
 
-        const distance = haversineMeters(location.latitude, location.longitude, Number(brLat), Number(brLng));
-        const maxRadius = Number(process.env.STAFF_CLOCK_RADIUS_METERS || radiusMeters || 200);
+        const distance = haversineMeters(location.latitude, location.longitude, schoolLat, schoolLng);
         if (distance > maxRadius) {
             return res.status(403).json({ success: false, message: 'User not around school location', distance_m: Math.round(distance), allowed_radius_m: maxRadius });
         }
