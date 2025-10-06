@@ -12,34 +12,28 @@ const dbConfig = {
 
 const dbName = process.env.DB_NAME;
 
-// Create a connection pool without specifying the database
+// Create a connection pool with the database name.
+// The pool will lazily create connections, so this is safe even if the DB doesn't exist yet.
 const pool = mysql.createPool({
     connectionLimit: 100,
     ...dbConfig,
+    database: dbName,
 });
 
 async function initializeDatabase() {
     let connection;
     try {
-        // Get a connection from the pool
-        connection = await mysql.createConnection(dbConfig);
+        // First, create a temporary connection without a DB to create the database if it's missing.
+        const tempConnection = await mysql.createConnection(dbConfig);
         console.log("Connected to MySQL server!");
 
         // Create the database if it doesn't exist
-        await connection.query(`CREATE DATABASE IF NOT EXISTS \`${dbName}\``);
+        await tempConnection.query(`CREATE DATABASE IF NOT EXISTS \`${dbName}\``);
         console.log(`Database "${dbName}" created or already exists.`);
+        await tempConnection.end();
 
-        // Close the initial connection
-        await connection.end();
-
-        // Re-create the pool with the database name
-        const poolWithDb = mysql.createPool({
-            connectionLimit: 100,
-            ...dbConfig,
-            database: dbName,
-        });
-
-        connection = await poolWithDb.getConnection();
+        // Now, get a connection from the main pool (which now points to the correct DB) to create tables.
+        connection = await pool.getConnection();
         console.log(`Connected to database "${dbName}"!`);
 
         const createUsersTable = `
@@ -744,7 +738,7 @@ async function initializeDatabase() {
 
     } catch (err) {
         console.error("Database initialization error:", err);
-        // process.exit(1);
+        process.exit(1); // Exit if DB initialization fails
     } finally {
         if (connection) connection.release();
     }

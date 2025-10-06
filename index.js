@@ -40,9 +40,12 @@ app.get('/', (req, res) => {
 
 const PORT = process.env.PORT || 3000;
 
-// Start the server after the database is initialized
-initializeDatabase().then(() => {
+// Start the server after ensuring the database is initialized
+async function startServer() {
+    await initializeDatabase();
     app.listen(PORT, () => {
         console.log(`Node server running on port ${PORT}`);
     });
-});
+}
+
+startServer();
