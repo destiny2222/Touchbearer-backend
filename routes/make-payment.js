@@ -4,7 +4,7 @@ const express = require('express');
 const router = express.Router();
 const https = require('https');
 const { v4: uuidv4 } = require('uuid');
-const { pool } = require('../database');const auth = require('../middleware/auth'); // For fee payments
+const { pool } = require('../database'); const auth = require('../middleware/auth'); // For fee payments
 const { createNewStudentFromEnrollment } = require('../services/enrollmentService'); // We will create this service
 
 // Helper function for making requests to Paystack
@@ -105,7 +105,7 @@ router.post('/verify', async (req, res) => {
             // Still return success if already processed, but indicate it to the client
             return res.status(200).json({ success: true, message: 'This transaction has already been processed.' });
         }
-        
+
         // Log the transaction to the revenue table
         await pool.query('INSERT INTO revenue SET ?', {
             id: uuidv4(),
@@ -137,12 +137,12 @@ router.post('/verify', async (req, res) => {
 
         } else if (metadata.payment_for === 'school_fees') {
             const { student_id, term_id } = metadata;
-            
+
             // Check if student_id or term_id is missing
             if (!student_id || !term_id) {
                 throw new Error(`CRITICAL: Missing student_id or term_id in metadata for reference ${reference}.`);
             }
-            
+
             // Record this specific payment
             await pool.query('INSERT INTO payments SET ?', {
                 id: uuidv4(),
@@ -156,73 +156,73 @@ router.post('/verify', async (req, res) => {
             // 1. Get student's class_id
             const [studentRows] = await pool.query('SELECT class_id FROM students WHERE id = ?', [student_id]);
             if (studentRows.length === 0) {
-                 throw new Error(`Could not find student with ID ${student_id} for payment update.`);
+                throw new Error(`Could not find student with ID ${student_id} for payment update.`);
             }
             const { class_id } = studentRows[0];
 
             // 2. Get total fees due for the CLASS and TERM
             const [[{ total_due }]] = await pool.query(
-                'SELECT SUM(amount) as total_due FROM fees WHERE class_id = ? AND term_id = ?', 
+                'SELECT SUM(amount) as total_due FROM fees WHERE class_id = ? AND term_id = ?',
                 [class_id, term_id]
             );
 
             // 3. Get total paid for the STUDENT and TERM
             const [[{ total_paid }]] = await pool.query(
-                'SELECT SUM(amount_paid) as total_paid FROM payments WHERE student_id = ? AND term_id = ?', 
+                'SELECT SUM(amount_paid) as total_paid FROM payments WHERE student_id = ? AND term_id = ?',
                 [student_id, term_id]
             );
 
             if (total_paid >= total_due) {
-                 await pool.query(
+                await pool.query(
                     'INSERT INTO student_payment_statuses (student_id, term_id, status) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE status = ?',
                     [student_id, term_id, 'Paid', 'Paid']
                 );
             }
             actionResult = { message: 'School fees payment recorded successfully!' };
         } else if (metadata.payment_for === 'book_purchase') {
-        const { student_id, book_id, parent_id } = metadata;
-        if (!student_id || !book_id || !parent_id) {
-            throw new Error(`CRITICAL: Missing metadata for book purchase. Ref: ${reference}`);
+            const { student_id, book_id, parent_id } = metadata;
+            if (!student_id || !book_id || !parent_id) {
+                throw new Error(`CRITICAL: Missing metadata for book purchase. Ref: ${reference}`);
+            }
+
+            const connection = await pool.getConnection();
+            try {
+                await connection.beginTransaction();
+
+                // 1. Lock the book row to prevent race conditions on stock
+                const [bookRows] = await connection.query('SELECT amount, price, branch_id FROM books WHERE id = ? FOR UPDATE', [book_id]);
+                if (bookRows.length === 0) throw new Error('Book not found.');
+
+                const book = bookRows[0];
+                if (book.amount <= 0) throw new Error('Book is out of stock.');
+
+                // 2. Decrease the book stock
+                await connection.query('UPDATE books SET amount = amount - 1 WHERE id = ?', [book_id]);
+
+                // 3. Log the purchase
+                await connection.query('INSERT INTO student_book_purchases SET ?', {
+                    id: uuidv4(),
+                    student_id,
+                    book_id,
+                    branch_id: book.branch_id,
+                    price: book.price,
+                    payment_status: 'Paid',
+                    purchase_method: 'Online'
+                });
+
+                await connection.commit();
+                actionResult = { message: 'Book purchased successfully!' };
+            } catch (err) {
+                await connection.rollback();
+                // Re-throw the error to be caught by the outer catch block
+                throw err;
+            } finally {
+                connection.release();
+            }
         }
 
-        const connection = await pool.getConnection();
-        try {
-            await connection.beginTransaction();
-
-            // 1. Lock the book row to prevent race conditions on stock
-            const [bookRows] = await connection.query('SELECT amount, price, branch_id FROM books WHERE id = ? FOR UPDATE', [book_id]);
-            if (bookRows.length === 0) throw new Error('Book not found.');
-            
-            const book = bookRows[0];
-            if (book.amount <= 0) throw new Error('Book is out of stock.');
-
-            // 2. Decrease the book stock
-            await connection.query('UPDATE books SET amount = amount - 1 WHERE id = ?', [book_id]);
-
-            // 3. Log the purchase
-            await connection.query('INSERT INTO student_book_purchases SET ?', {
-                id: uuidv4(),
-                student_id,
-                book_id,
-                branch_id: book.branch_id,
-                price: book.price,
-                payment_status: 'Paid',
-                purchase_method: 'Online'
-            });
-
-            await connection.commit();
-            actionResult = { message: 'Book purchased successfully!' };
-        } catch (err) {
-            await connection.rollback();
-            // Re-throw the error to be caught by the outer catch block
-            throw err; 
-        } finally {
-            connection.release();
-        }
-    }
-
-        res.status(200).json({ 
-            success: true, 
+        res.status(200).json({
+            success: true,
             message: 'Payment verified and recorded successfully.',
             ...actionResult
         });

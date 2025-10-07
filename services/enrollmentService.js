@@ -48,7 +48,17 @@ async function createNewStudentFromEnrollment(formData) {
             await connection.query('INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)', [parentUserId, parentRole[0].id]);
 
             parent_id = uuidv4();
-            await connection.query('INSERT INTO parents (id, user_id, name, phone, email) VALUES (?, ?, ?, ?, ?)', [parent_id, parentUserId, formData.parent_name, formData.parent_phone, formData.parent_email]);
+            await connection.query('INSERT INTO parents (id, user_id, name, phone, email, dob, residential_address, occupation, workplace_address) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [
+                parent_id,
+                parentUserId,
+                formData.parent_name,
+                formData.parent_phone,
+                formData.parent_email,
+                formData.father_dob || null,
+                formData.parent_residential_address || null,
+                formData.father_occupation || null,
+                formData.father_workplace_address || null
+            ]);
         }
 
         // Step 2: Create User for New Student

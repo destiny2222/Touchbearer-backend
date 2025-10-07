@@ -39,7 +39,7 @@ router.post('/create', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, r
         first_name, last_name, dob, passport, address, nationality, state,
         class_id, branch_id, religion, disability,
         parent_email, parent_phone, parent_name,
-        // New fields
+        
         surname_name, other_names, gender, place_of_birth, lga, tribe,
         blood_group, genotype, allergies
     } = req.body;

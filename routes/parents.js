@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
-const { pool } = require('../database');const auth = require('../middleware/auth');
+const { pool } = require('../database'); const auth = require('../middleware/auth');
 const authorize = require('../middleware/authorize');
 const { v4: uuidv4 } = require('uuid');
 
@@ -9,7 +9,7 @@ const { v4: uuidv4 } = require('uuid');
 // @desc    Create a new parent
 // @access  Admin, SuperAdmin
 router.post('/', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => {
-    const { name, email, phone } = req.body;
+    const { name, email, phone, dob, residential_address, occupation, workplace_address } = req.body;
 
     if (!name || !email || !phone) {
         return res.status(400).json({ success: false, message: 'Name, email, and phone are required.' });
@@ -47,7 +47,11 @@ router.post('/', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) =>
             user_id: userId,
             name,
             phone,
-            email
+            email,
+            dob: dob || null,
+            residential_address: residential_address || null,
+            occupation: occupation || null,
+            workplace_address: workplace_address || null
         };
         await connection.query('INSERT INTO parents SET ?', newParent);
 
