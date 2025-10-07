@@ -458,7 +458,12 @@ router.post('/migrate/:newStudentId', [auth, authorize(['Admin', 'SuperAdmin'])]
             class_id: ns.class_id,
             branch_id: ns.branch_id,
             religion: ns.religion,
-            disability: ns.disability
+            disability: ns.disability,
+            previous_school: ns.previous_school,
+            previous_class: ns.previous_class,
+            last_term_result: ns.last_term_result,
+            birth_certificate: ns.birth_certificate,
+            medical_report: ns.medical_report
         };
         await connection.query('INSERT INTO students SET ?', studentData);
 
