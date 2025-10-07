@@ -39,12 +39,15 @@ router.post('/create', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, r
         first_name, last_name, dob, passport, address, nationality, state,
         class_id, branch_id, religion, disability,
         parent_email, parent_phone, parent_name,
-        
+
         surname_name, other_names, gender, place_of_birth, lga, tribe,
         blood_group, genotype, allergies
     } = req.body;
+    // Map optional surname/other_names from frontend to required first_name/last_name
+    const normalizedFirstName = first_name || other_names;
+    const normalizedLastName = last_name || surname_name;
 
-    if (!first_name || !last_name || !dob || !class_id || !branch_id || (!parent_email && !parent_phone)) {
+    if (!normalizedFirstName || !normalizedLastName || !dob || !class_id || !branch_id || (!parent_email && !parent_phone)) {
         return res.status(400).json({ success: false, message: 'Missing required fields, including parent_email or parent_phone.' });
     }
 
@@ -119,8 +122,8 @@ router.post('/create', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, r
                 id: uuidv4(),
                 user_id: studentUserId,
                 parent_id,
-                first_name,
-                last_name,
+                first_name: normalizedFirstName,
+                last_name: normalizedLastName,
                 surname_name: surname_name || null,
                 other_names: other_names || null,
                 gender: gender || null,
@@ -156,7 +159,7 @@ router.post('/create', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, r
                 data: {
                     student_login_id: studentId,
                     temporary_password: tempPassword,
-                    student: { id: studentData.id, first_name, last_name, class_id, branch_id }
+                    student: { id: studentData.id, first_name: normalizedFirstName, last_name: normalizedLastName, class_id, branch_id }
                 }
             });
         } catch (e) {
@@ -256,7 +259,8 @@ router.put('/:id', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) 
     const { id } = req.params;
     const {
         first_name, last_name, dob, passport, address,
-        nationality, state, class_id, branch_id, religion, disability
+        nationality, state, class_id, branch_id, religion, disability,
+        surname_name, other_names
     } = req.body;
 
     const connection = await pool.getConnection();
@@ -281,9 +285,13 @@ router.put('/:id', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) 
             }
         }
 
+        // Normalize incoming name fields from frontend
+        const normalizedFirstName = first_name || other_names;
+        const normalizedLastName = last_name || surname_name;
+
         const updateFields = {};
-        if (first_name) updateFields.first_name = first_name;
-        if (last_name) updateFields.last_name = last_name;
+        if (normalizedFirstName) updateFields.first_name = normalizedFirstName;
+        if (normalizedLastName) updateFields.last_name = normalizedLastName;
         if (dob) updateFields.dob = dob;
         if (passport) updateFields.passport = passport;
         if (address) updateFields.address = address;
