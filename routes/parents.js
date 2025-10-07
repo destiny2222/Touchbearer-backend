@@ -446,7 +446,7 @@ router.get('/:id', [auth, authorize(['SuperAdmin', 'Admin'])], async (req, res) 
 
 router.put('/:id', [auth, authorize(['SuperAdmin', 'Admin'])], async (req, res) => {
     const { id } = req.params;
-    const { name, phone, email } = req.body;
+    const { name, phone, email, dob, residential_address, occupation, workplace_address } = req.body;
     const connection = await pool.getConnection();
 
     try {
@@ -480,6 +480,10 @@ router.put('/:id', [auth, authorize(['SuperAdmin', 'Admin'])], async (req, res) 
         if (name) updateFields.name = name;
         if (phone) updateFields.phone = phone;
         if (email) updateFields.email = email;
+        if (dob !== undefined) updateFields.dob = dob;
+        if (residential_address !== undefined) updateFields.residential_address = residential_address;
+        if (occupation !== undefined) updateFields.occupation = occupation;
+        if (workplace_address !== undefined) updateFields.workplace_address = workplace_address;
 
         if (Object.keys(updateFields).length > 0) {
             await connection.query('UPDATE parents SET ? WHERE id = ?', [updateFields, id]);

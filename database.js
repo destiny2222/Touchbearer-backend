@@ -69,6 +69,10 @@ async function initializeDatabase() {
                 name VARCHAR(255) NOT NULL,
                 phone VARCHAR(255) NOT NULL UNIQUE,
                 email VARCHAR(255) NOT NULL UNIQUE,
+                dob VARCHAR(5),
+                residential_address VARCHAR(255),
+                occupation VARCHAR(255),
+                workplace_address VARCHAR(255),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(id)
             )
@@ -639,6 +643,20 @@ async function initializeDatabase() {
         console.log("User_roles table created");
         await connection.query(createParentsTable);
         console.log("Parents table created");
+
+        // Add new fields to existing parents table if they don't exist
+        try {
+            await connection.query(`
+                ALTER TABLE parents 
+                ADD COLUMN IF NOT EXISTS dob VARCHAR(5),
+                ADD COLUMN IF NOT EXISTS residential_address VARCHAR(255),
+                ADD COLUMN IF NOT EXISTS occupation VARCHAR(255),
+                ADD COLUMN IF NOT EXISTS workplace_address VARCHAR(255)
+            `);
+            console.log("Parents table fields updated");
+        } catch (error) {
+            console.log("Parents table fields already exist or error:", error.message);
+        }
         await connection.query(createSuperAdminsTable);
         console.log("Super Admins table created");
         await connection.query(createBranchesTable);
