@@ -233,9 +233,9 @@ async function initializeDatabase() {
                 dob DATE NOT NULL,
                 place_of_birth VARCHAR(255),
                 passport VARCHAR(255),
-                address VARCHAR(255),
-                nationality VARCHAR(255),
-                state VARCHAR(255),
+                address VARCHAR(255) NOT NULL,
+                nationality VARCHAR(255) NOT NULL,
+                state VARCHAR(255) NOT NULL,
                 lga VARCHAR(255),
                 tribe VARCHAR(255),
                 class_id VARCHAR(36) NOT NULL,
@@ -245,7 +245,7 @@ async function initializeDatabase() {
                 last_term_result VARCHAR(255),
                 birth_certificate VARCHAR(255),
                 medical_report VARCHAR(255),
-                religion VARCHAR(255),
+                religion VARCHAR(255) NOT NULL,
                 disability VARCHAR(255),
                 blood_group VARCHAR(5),
                 genotype VARCHAR(5),
@@ -646,16 +646,34 @@ async function initializeDatabase() {
 
         // Add new fields to existing parents table if they don't exist
         try {
-            await connection.query(`
-                ALTER TABLE parents 
-                ADD COLUMN IF NOT EXISTS dob VARCHAR(5),
-                ADD COLUMN IF NOT EXISTS residential_address VARCHAR(255),
-                ADD COLUMN IF NOT EXISTS occupation VARCHAR(255),
-                ADD COLUMN IF NOT EXISTS workplace_address VARCHAR(255)
-            `);
-            console.log("Parents table fields updated");
+            // Check and add columns one by one for better compatibility
+            const [parentColumns] = await connection.query(`
+                SELECT COLUMN_NAME 
+                FROM INFORMATION_SCHEMA.COLUMNS 
+                WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'parents'
+            `, [dbName]);
+
+            const existingParentCols = parentColumns.map(row => row.COLUMN_NAME);
+
+            if (!existingParentCols.includes('dob')) {
+                await connection.query('ALTER TABLE parents ADD COLUMN dob VARCHAR(5)');
+                console.log("Added 'dob' column to parents table");
+            }
+            if (!existingParentCols.includes('residential_address')) {
+                await connection.query('ALTER TABLE parents ADD COLUMN residential_address VARCHAR(255)');
+                console.log("Added 'residential_address' column to parents table");
+            }
+            if (!existingParentCols.includes('occupation')) {
+                await connection.query('ALTER TABLE parents ADD COLUMN occupation VARCHAR(255)');
+                console.log("Added 'occupation' column to parents table");
+            }
+            if (!existingParentCols.includes('workplace_address')) {
+                await connection.query('ALTER TABLE parents ADD COLUMN workplace_address VARCHAR(255)');
+                console.log("Added 'workplace_address' column to parents table");
+            }
+            console.log("Parents table fields checked and updated");
         } catch (error) {
-            console.log("Parents table fields already exist or error:", error.message);
+            console.log("Error updating parents table fields:", error.message);
         }
         await connection.query(createSuperAdminsTable);
         console.log("Super Admins table created");
@@ -681,6 +699,97 @@ async function initializeDatabase() {
 
         await connection.query(createStudentTable);
         console.log("Students table created");
+
+        // Add missing columns to existing students table
+        try {
+            const [studentColumns] = await connection.query(`
+                SELECT COLUMN_NAME 
+                FROM INFORMATION_SCHEMA.COLUMNS 
+                WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'students'
+            `, [dbName]);
+
+            const existingStudentCols = studentColumns.map(row => row.COLUMN_NAME);
+
+            if (!existingStudentCols.includes('surname_name')) {
+                await connection.query('ALTER TABLE students ADD COLUMN surname_name VARCHAR(255) AFTER last_name');
+                console.log("Added 'surname_name' column to students table");
+            }
+            if (!existingStudentCols.includes('other_names')) {
+                await connection.query('ALTER TABLE students ADD COLUMN other_names VARCHAR(255) AFTER surname_name');
+                console.log("Added 'other_names' column to students table");
+            }
+            if (!existingStudentCols.includes('gender')) {
+                await connection.query("ALTER TABLE students ADD COLUMN gender ENUM('male','female','other') AFTER other_names");
+                console.log("Added 'gender' column to students table");
+            }
+            if (!existingStudentCols.includes('place_of_birth')) {
+                await connection.query('ALTER TABLE students ADD COLUMN place_of_birth VARCHAR(255) AFTER dob');
+                console.log("Added 'place_of_birth' column to students table");
+            }
+            if (!existingStudentCols.includes('lga')) {
+                await connection.query('ALTER TABLE students ADD COLUMN lga VARCHAR(255) AFTER state');
+                console.log("Added 'lga' column to students table");
+            }
+            if (!existingStudentCols.includes('tribe')) {
+                await connection.query('ALTER TABLE students ADD COLUMN tribe VARCHAR(255) AFTER lga');
+                console.log("Added 'tribe' column to students table");
+            }
+            if (!existingStudentCols.includes('previous_school')) {
+                await connection.query('ALTER TABLE students ADD COLUMN previous_school VARCHAR(255) AFTER branch_id');
+                console.log("Added 'previous_school' column to students table");
+            }
+            if (!existingStudentCols.includes('previous_class')) {
+                await connection.query('ALTER TABLE students ADD COLUMN previous_class VARCHAR(255) AFTER previous_school');
+                console.log("Added 'previous_class' column to students table");
+            }
+            if (!existingStudentCols.includes('last_term_result')) {
+                await connection.query('ALTER TABLE students ADD COLUMN last_term_result VARCHAR(255) AFTER previous_class');
+                console.log("Added 'last_term_result' column to students table");
+            }
+            if (!existingStudentCols.includes('birth_certificate')) {
+                await connection.query('ALTER TABLE students ADD COLUMN birth_certificate VARCHAR(255) AFTER last_term_result');
+                console.log("Added 'birth_certificate' column to students table");
+            }
+            if (!existingStudentCols.includes('medical_report')) {
+                await connection.query('ALTER TABLE students ADD COLUMN medical_report VARCHAR(255) AFTER birth_certificate');
+                console.log("Added 'medical_report' column to students table");
+            }
+            if (!existingStudentCols.includes('blood_group')) {
+                await connection.query('ALTER TABLE students ADD COLUMN blood_group VARCHAR(5) AFTER disability');
+                console.log("Added 'blood_group' column to students table");
+            }
+            if (!existingStudentCols.includes('genotype')) {
+                await connection.query('ALTER TABLE students ADD COLUMN genotype VARCHAR(5) AFTER blood_group');
+                console.log("Added 'genotype' column to students table");
+            }
+            if (!existingStudentCols.includes('allergies')) {
+                await connection.query('ALTER TABLE students ADD COLUMN allergies VARCHAR(255) AFTER genotype');
+                console.log("Added 'allergies' column to students table");
+            }
+
+            console.log("Students table columns checked and updated");
+        } catch (error) {
+            console.log("Error adding columns to students table:", error.message);
+        }
+
+        // Update existing students table to ensure required fields are NOT NULL (only if columns exist)
+        try {
+            await connection.query(`
+                ALTER TABLE students 
+                MODIFY COLUMN address VARCHAR(255) NOT NULL,
+                MODIFY COLUMN nationality VARCHAR(255) NOT NULL,
+                MODIFY COLUMN state VARCHAR(255) NOT NULL,
+                MODIFY COLUMN religion VARCHAR(255) NOT NULL
+            `);
+            console.log("Students table schema updated with NOT NULL constraints");
+        } catch (error) {
+            if (error.code !== 'ER_BAD_NULL_ERROR') {
+                console.log("Students table schema already up to date or error:", error.message);
+            } else {
+                console.log("Warning: Some students have NULL values in required fields. Please update data first.");
+            }
+        }
+
         await connection.query(createNewStudentTable);
         console.log("New Students table created");
         await connection.query(createEventsTable);
