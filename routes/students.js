@@ -10,20 +10,68 @@ async function getAdminBranchId(userId) {
     return rows.length > 0 ? rows[0].branch_id : null;
 }
 
-async function generateStudentId() {
-    const prefix = 'ttb';
-    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
-    let isUnique = false;
-    let studentId = '';
-    while (!isUnique) {
-        let randomPart = '';
-        for (let i = 0; i < 4; i++) randomPart += chars.charAt(Math.floor(Math.random() * chars.length));
-        studentId = prefix + randomPart;
-        const [existingUser] = await pool.query('SELECT id FROM users WHERE email = ?', [studentId]);
-        if (existingUser.length === 0) isUnique = true;
+// async function generateStudentId() {
+//     const prefix = 'ttb';
+//     const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+//     let isUnique = false;
+//     let studentId = '';
+//     while (!isUnique) {
+//         let randomPart = '';
+//         for (let i = 0; i < 4; i++) randomPart += chars.charAt(Math.floor(Math.random() * chars.length));
+//         studentId = prefix + randomPart;
+//         const [existingUser] = await pool.query('SELECT id FROM users WHERE email = ?', [studentId]);
+//         if (existingUser.length === 0) isUnique = true;
+//     }
+//     return studentId;
+// }
+
+
+async function generateStudentId(branch_id) {
+    // 1️⃣ Get school and address info
+    const [branchRows] = await pool.query(
+        'SELECT school_name, address FROM branches WHERE id = ?',
+        [branch_id]
+    );
+
+    if (branchRows.length === 0) {
+        throw new Error('Branch not found');
     }
+
+    const branch = branchRows[0];
+
+    // 2️⃣ Build a prefix from school name and branch address
+    // Example: "Torchbearer Academy" + "Rumuola Port Harcourt" → "TBRU"
+    const schoolPrefix = branch.school_name.replace(/\s+/g, '').substring(0, 2).toUpperCase();
+    const addrPrefix = branch.address.replace(/\s+/g, '').substring(0, 2).toUpperCase();
+    const prefix = `${schoolPrefix}${addrPrefix}`; // e.g. "TBRU"
+
+    // 3️⃣ Find the last student ID for this branch
+    const [rows] = await pool.query(
+        'SELECT student_id FROM students WHERE branch_id = ? ORDER BY created_at DESC LIMIT 1',
+        [branch_id]
+    );
+
+    let nextNumber = 1;
+    if (rows.length > 0) {
+        const lastId = rows[0].student_id;
+        const match = lastId.match(/\d+$/); // extract trailing digits
+        if (match) nextNumber = parseInt(match[0]) + 1;
+    }
+
+    // 4️⃣ Format the new ID (e.g. "TBRU001")
+    const studentId = `${prefix}${String(nextNumber).padStart(3, '0')}`;
+
+    // 5️⃣ Ensure uniqueness in users table
+    const [exists] = await pool.query('SELECT id FROM users WHERE email = ?', [studentId]);
+    if (exists.length > 0) {
+        // retry by incrementing the number
+        const retryId = `${prefix}${String(nextNumber + 1).padStart(3, '0')}`;
+        return retryId;
+    }
+
     return studentId;
 }
+
 
 function generatePassword() {
     const length = 10;
