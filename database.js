@@ -132,6 +132,7 @@ async function initializeDatabase() {
                 image_url VARCHAR(500),
                 status ENUM('Active', 'On Leave', 'Not Paid', 'Suspended', 'Terminated') NOT NULL DEFAULT 'Active',
                 salary_due_date DATE,
+                permissions JSON DEFAULT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
@@ -479,6 +480,19 @@ async function initializeDatabase() {
             )
         `;
 
+        const createBroadcastBranchesTable = `
+            CREATE TABLE IF NOT EXISTS broadcast_branches (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                broadcast_id VARCHAR(36) NOT NULL,
+                branch_id VARCHAR(36) NOT NULL,
+                FOREIGN KEY (broadcast_id) REFERENCES broadcasts(id) ON DELETE CASCADE,
+                FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE,
+                UNIQUE KEY (broadcast_id, branch_id),
+                INDEX (broadcast_id),
+                INDEX (branch_id)
+            )
+        `;
+
         const createStaffAttendanceTable = `
             CREATE TABLE IF NOT EXISTS staff_attendance (
                 id VARCHAR(36) PRIMARY KEY,
@@ -749,6 +763,25 @@ async function initializeDatabase() {
         console.log("Branch locations table created");
         await connection.query(createStaffTable);
         console.log("Staff table created (without FK to classes)");
+
+        // Add permissions column to staff if it doesn't exist
+        try {
+            const [staffColumns] = await connection.query(`
+                SELECT COLUMN_NAME 
+                FROM INFORMATION_SCHEMA.COLUMNS 
+                WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'staff'
+            `, [dbName]);
+
+            const existingStaffCols = staffColumns.map(row => row.COLUMN_NAME);
+
+            if (!existingStaffCols.includes('permissions')) {
+                await connection.query('ALTER TABLE staff ADD COLUMN permissions JSON DEFAULT NULL AFTER salary_due_date');
+                console.log("Added 'permissions' column to staff table");
+            }
+        } catch (error) {
+            console.log("Error updating staff table:", error.message);
+        }
+
         await connection.query(createClassesTable);
         console.log("Classes table created");
 
@@ -923,6 +956,8 @@ async function initializeDatabase() {
         console.log("Broadcast_cc table created");
         await connection.query(createBroadcastReceiptsTable);
         console.log("Broadcast_receipts table created");
+        await connection.query(createBroadcastBranchesTable);
+        console.log("Broadcast_branches table created");
         await connection.query(createStaffAttendanceTable);
         console.log("Staff attendance table created");
         await connection.query(createStaffAttendanceLogsTable);

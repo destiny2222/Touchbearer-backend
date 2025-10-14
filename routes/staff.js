@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
-const { pool } = require('../database');const { v4: uuidv4 } = require('uuid');
+const { pool } = require('../database'); const { v4: uuidv4 } = require('uuid');
 const auth = require('../middleware/auth');
 const authorize = require('../middleware/authorize');
 const validateStaffData = require('../middleware/validateStaff');
@@ -96,7 +96,9 @@ router.post('/create', auth, authorize(['SuperAdmin', 'Admin']), validateStaffDa
             description,
             role_id,
             branch_id,
-            image
+            image,
+            teacher_permissions,
+            admin_permissions
         } = req.body;
 
         if (req.user.roles.includes('Admin')) {
@@ -169,6 +171,28 @@ router.post('/create', auth, authorize(['SuperAdmin', 'Admin']), validateStaffDa
             });
         }
 
+        // Determine permissions based on role
+        let permissions = null;
+        const roleName = roleData[0].name;
+
+        if (roleName === 'Teacher' && teacher_permissions) {
+            if (!Array.isArray(teacher_permissions)) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'teacher_permissions must be an array'
+                });
+            }
+            permissions = teacher_permissions;
+        } else if (roleName === 'Admin' && admin_permissions) {
+            if (!Array.isArray(admin_permissions)) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'admin_permissions must be an array'
+                });
+            }
+            permissions = admin_permissions;
+        }
+
         await connection.beginTransaction();
 
         const password = generatePassword();
@@ -203,7 +227,8 @@ router.post('/create', auth, authorize(['SuperAdmin', 'Admin']), validateStaffDa
             branch_id,
             image_url: image || null,
             status: 'Active',
-            salary_due_date: salaryDueDate
+            salary_due_date: salaryDueDate,
+            permissions: permissions ? JSON.stringify(permissions) : null
         };
 
         await connection.query('INSERT INTO staff SET ?', staffData);
@@ -230,6 +255,7 @@ router.post('/create', auth, authorize(['SuperAdmin', 'Admin']), validateStaffDa
                 address: address || null,
                 gender: gender.charAt(0).toUpperCase() + gender.slice(1).toLowerCase(),
                 salaryDueDate,
+                permissions: permissions || null,
                 temporaryPassword: password
             }
         });
@@ -262,6 +288,7 @@ router.get('/', auth, authorize(['SuperAdmin', 'Admin']), async (req, res) => {
                 s.status,
                 s.image_url as imageUrl,
                 s.salary_due_date as salaryDueDate,
+                s.permissions,
                 s.created_at as createdAt,
                 r.id as roleId,
                 r.name as role,
@@ -304,6 +331,7 @@ router.get('/', auth, authorize(['SuperAdmin', 'Admin']), async (req, res) => {
             address: member.address,
             gender: member.gender.charAt(0).toUpperCase() + member.gender.slice(1),
             salaryDueDate: member.salaryDueDate,
+            permissions: member.permissions ? JSON.parse(member.permissions) : null,
             createdAt: member.createdAt
         }));
 
@@ -337,6 +365,7 @@ router.get('/:id', auth, async (req, res) => {
                 s.status,
                 s.image_url as imageUrl,
                 s.salary_due_date as salaryDueDate,
+                s.permissions,
                 s.created_at as createdAt,
                 r.id as roleId,
                 r.name as role,
@@ -385,6 +414,7 @@ router.get('/:id', auth, async (req, res) => {
                 address: member.address,
                 gender: member.gender.charAt(0).toUpperCase() + member.gender.slice(1),
                 salaryDueDate: member.salaryDueDate,
+                permissions: member.permissions ? JSON.parse(member.permissions) : null,
                 createdAt: member.createdAt
             }
         });
@@ -414,7 +444,9 @@ router.put('/:id/update', auth, authorize(['SuperAdmin', 'Admin']), validateStaf
             description,
             role_id,
             branch_id,
-            image
+            image,
+            teacher_permissions,
+            admin_permissions
         } = req.body;
 
         const [existingStaff] = await connection.query(
@@ -527,6 +559,27 @@ router.put('/:id/update', auth, authorize(['SuperAdmin', 'Admin']), validateStaf
         if (branch_id) updateFields.push('branch_id = ?'), updateValues.push(branch_id);
         if (image !== undefined) updateFields.push('image_url = ?'), updateValues.push(image);
 
+        // Handle permissions update
+        if (teacher_permissions !== undefined) {
+            if (!Array.isArray(teacher_permissions)) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'teacher_permissions must be an array'
+                });
+            }
+            updateFields.push('permissions = ?');
+            updateValues.push(JSON.stringify(teacher_permissions));
+        } else if (admin_permissions !== undefined) {
+            if (!Array.isArray(admin_permissions)) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'admin_permissions must be an array'
+                });
+            }
+            updateFields.push('permissions = ?');
+            updateValues.push(JSON.stringify(admin_permissions));
+        }
+
         if (salary !== undefined && salary !== null && !currentStaff.salary) {
             updateFields.push('salary_due_date = ?');
             updateValues.push(calculateSalaryDueDate());
@@ -574,7 +627,8 @@ router.put('/:id/update', auth, authorize(['SuperAdmin', 'Admin']), validateStaf
                 imageUrl: updated.image_url,
                 address: updated.address,
                 gender: updated.gender.charAt(0).toUpperCase() + updated.gender.slice(1),
-                salaryDueDate: updated.salary_due_date
+                salaryDueDate: updated.salary_due_date,
+                permissions: updated.permissions ? JSON.parse(updated.permissions) : null
             }
         });
 
@@ -766,6 +820,117 @@ router.post('/:id/reset-password', auth, authorize(['SuperAdmin', 'Admin']), asy
     }
 });
 
+router.post('/:id/terminate', auth, authorize(['SuperAdmin', 'Admin']), async (req, res) => {
+    const connection = await pool.getConnection();
+
+    try {
+        const staffId = req.params.id;
+        const { reason, effectiveDate } = req.body;
+
+        // Validate required fields
+        if (!reason) {
+            return res.status(400).json({
+                success: false,
+                message: 'Termination reason is required'
+            });
+        }
+
+        await connection.beginTransaction();
+
+        // Get staff details
+        const [staff] = await connection.query(
+            `SELECT s.*, u.id as user_id, r.name as role_name, b.school_name as branch_name 
+             FROM staff s 
+             JOIN users u ON s.user_id = u.id 
+             JOIN roles r ON s.role_id = r.id 
+             JOIN branches b ON s.branch_id = b.id 
+             WHERE s.id = ? FOR UPDATE`,
+            [staffId]
+        );
+
+        if (staff.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({
+                success: false,
+                message: 'Staff member not found'
+            });
+        }
+
+        const currentStaff = staff[0];
+
+        // Check authorization for Admin users
+        if (req.user.roles.includes('Admin')) {
+            const [adminStaff] = await connection.query('SELECT branch_id FROM staff WHERE user_id = ?', [req.user.id]);
+            if (adminStaff.length === 0 || adminStaff[0].branch_id !== currentStaff.branch_id) {
+                await connection.rollback();
+                return res.status(403).json({
+                    success: false,
+                    message: 'You are not authorized to terminate this staff member.'
+                });
+            }
+        }
+
+        // Check if already terminated
+        if (currentStaff.status === 'Terminated') {
+            await connection.rollback();
+            return res.status(400).json({
+                success: false,
+                message: 'Staff member is already terminated'
+            });
+        }
+
+        // Generate a secure random password to lock the account
+        const randomPassword = require('crypto').randomBytes(32).toString('hex');
+        const hashedPassword = await bcrypt.hash(randomPassword, 10);
+
+        // Update user's password to lock account
+        await connection.query(
+            'UPDATE users SET password = ? WHERE id = ?',
+            [hashedPassword, currentStaff.user_id]
+        );
+
+        // Update staff status to Terminated and clear permissions
+        const terminationDate = effectiveDate || new Date().toISOString().split('T')[0];
+        await connection.query(
+            `UPDATE staff 
+             SET status = 'Terminated', 
+                 permissions = NULL,
+                 salary_due_date = NULL,
+                 description = CONCAT(COALESCE(description, ''), '\n[TERMINATED on ${terminationDate}] Reason: ${reason}')
+             WHERE id = ?`,
+            [staffId]
+        );
+
+        await connection.commit();
+
+        res.json({
+            success: true,
+            message: 'Staff member terminated successfully',
+            data: {
+                id: currentStaff.id,
+                name: currentStaff.name,
+                email: currentStaff.email,
+                role: currentStaff.role_name,
+                branch: currentStaff.branch_name,
+                previousStatus: currentStaff.status,
+                newStatus: 'Terminated',
+                terminationDate,
+                reason
+            }
+        });
+
+    } catch (error) {
+        await connection.rollback();
+        console.error('Error terminating staff:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Server error while terminating staff member'
+        });
+    } finally {
+        connection.release();
+    }
+});
+
 router.delete('/:id', auth, authorize(['SuperAdmin']), async (req, res) => {
     const connection = await pool.getConnection();
 
@@ -827,6 +992,7 @@ router.get('/branch/:branchId', auth, async (req, res) => {
                 s.status,
                 s.image_url as imageUrl,
                 s.salary_due_date as salaryDueDate,
+                s.permissions,
                 r.id as roleId,
                 r.name as role,
                 b.id as branchId,
@@ -856,7 +1022,8 @@ router.get('/branch/:branchId', auth, async (req, res) => {
             imageUrl: member.imageUrl,
             address: member.address,
             gender: member.gender.charAt(0).toUpperCase() + member.gender.slice(1),
-            salaryDueDate: member.salaryDueDate
+            salaryDueDate: member.salaryDueDate,
+            permissions: member.permissions ? JSON.parse(member.permissions) : null
         }));
 
         res.json({
@@ -899,6 +1066,7 @@ router.get('/status/:status', auth, async (req, res) => {
                 s.status,
                 s.image_url as imageUrl,
                 s.salary_due_date as salaryDueDate,
+                s.permissions,
                 r.id as roleId,
                 r.name as role,
                 b.id as branchId,
@@ -928,7 +1096,8 @@ router.get('/status/:status', auth, async (req, res) => {
             imageUrl: member.imageUrl,
             address: member.address,
             gender: member.gender.charAt(0).toUpperCase() + member.gender.slice(1),
-            salaryDueDate: member.salaryDueDate
+            salaryDueDate: member.salaryDueDate,
+            permissions: member.permissions ? JSON.parse(member.permissions) : null
         }));
 
         res.json({

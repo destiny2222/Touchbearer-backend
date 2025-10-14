@@ -2,7 +2,7 @@
 
 const express = require('express');
 const router = express.Router();
-const { pool } = require('../database');const auth = require('../middleware/auth');
+const { pool } = require('../database'); const auth = require('../middleware/auth');
 const authorize = require('../middleware/authorize');
 
 // GET /api/analytics/summary - Get aggregated data for all dashboard charts
@@ -23,7 +23,7 @@ router.get('/summary', [auth, authorize(['SuperAdmin', 'Admin'])], async (req, r
         }
 
         // --- 1. Balance Analytics (Revenue vs Expenses over last 90 days) ---
-        
+
         // FIX: Build revenue query conditions dynamically
         const revenueConditions = ['paid_at >= ?'];
         const revenueParams = [ninetyDaysAgo];
@@ -61,17 +61,17 @@ router.get('/summary', [auth, authorize(['SuperAdmin', 'Admin'])], async (req, r
         const [revenueSource] = await connection.query(
             `SELECT payment_for, SUM(amount) as total FROM revenue GROUP BY payment_for;`
         );
-        
+
         // --- 3. School Population ---
         const populationParams = adminBranchId ? [adminBranchId] : [];
         const branchFilter = adminBranchId ? 'WHERE branch_id = ?' : '';
-        
+
         const [[{ count: studentCount }]] = await connection.query(`SELECT COUNT(*) as count FROM students ${branchFilter}`, populationParams);
         const [[{ count: parentCount }]] = await connection.query(
             `SELECT COUNT(DISTINCT p.id) as count FROM parents p JOIN students s ON p.id = s.parent_id ${branchFilter.replace('branch_id', 's.branch_id')}`, populationParams
         );
         const [[{ count: newStudentCount }]] = await connection.query(`SELECT COUNT(*) as count FROM new_students ${branchFilter}`, populationParams);
-        
+
         // --- 4. Recent Expenses (for the list view) ---
         const recentExpensesQuery = `
              SELECT e.*, s.name as author_name, b.school_name as branch_name 
@@ -298,37 +298,45 @@ router.get('/analysis-page', [auth, authorize(['SuperAdmin', 'Admin'])], async (
 
         // 1. Gross Revenue by Branch
         const [grossRevenueData] = await connection.query(`
-            SELECT b.school_name as name, SUM(r.amount) as value
-            FROM revenue r
-            JOIN students s ON r.student_id = s.id
-            JOIN branches b ON s.branch_id = b.id
-            ${simpleBranchFilter.replace('WHERE', 'WHERE').replace('branch_id', 's.branch_id')}
-            GROUP BY b.school_name;
+            SELECT b.school_name as name, COALESCE(SUM(r.amount), 0) as value
+            FROM branches b
+            LEFT JOIN students s ON b.id = s.branch_id
+            LEFT JOIN revenue r ON s.id = r.student_id
+            ${adminBranchId ? `WHERE b.id = ${connection.escape(adminBranchId)}` : ''}
+            GROUP BY b.school_name
+            ORDER BY b.school_name;
         `);
 
-        // 2. Fees Data (mocked as the schema is unknown)
+        // 2. Fees Data
         const feesData = [
-            { name: "Owing", value: 25, color: "#1e40af" },
-            { name: "Deposit", value: 35, color: "#3b82f6" },
-            { name: "Paid", value: 40, color: "#60a5fa" },
+            { name: "Paid", value: Math.round(feesPaidPercentage), color: "#10b981" },
+            { name: "Owing", value: Math.round(feesOwingPercentage), color: "#ef4444" }
         ];
 
         // 3. Revenue Source
         const [revenueSourceData] = await connection.query(`
-            SELECT payment_for as category, (SUM(amount) / (SELECT SUM(amount) FROM revenue)) * 100 as value
-            FROM revenue
-            ${simpleBranchFilter.replace('WHERE', 'WHERE').replace('branch_id', 'student_id IN (SELECT id FROM students WHERE branch_id = ' + connection.escape(adminBranchId) + ')')}
-            GROUP BY payment_for;
+            SELECT 
+                payment_for as category, 
+                (SUM(r.amount) / total_revenue.total_sum) * 100 as value
+            FROM revenue r
+            LEFT JOIN students s ON r.student_id = s.id
+            CROSS JOIN (SELECT COALESCE(SUM(rev.amount), 0) as total_sum FROM revenue rev LEFT JOIN students stud ON rev.student_id = stud.id ${adminBranchId ? `WHERE stud.branch_id = ${connection.escape(adminBranchId)}` : ''}) as total_revenue
+            ${adminBranchId ? `WHERE s.branch_id = ${connection.escape(adminBranchId)}` : ''}
+            GROUP BY payment_for
+            ORDER BY payment_for;
         `);
 
-        // 4. Monthly Revenue Trend (last 6 months)
+        // 4. Monthly Revenue Trend (last 12 months)
         const [monthlyRevenueData] = await connection.query(`
-            SELECT DATE_FORMAT(paid_at, '%b') as month, SUM(amount) as revenue
-            FROM revenue
-            WHERE paid_at >= CURDATE() - INTERVAL 6 MONTH
-            ${simpleBranchFilter.replace('WHERE', 'AND').replace('branch_id', 'student_id IN (SELECT id FROM students WHERE branch_id = ' + connection.escape(adminBranchId) + ')')}
-            GROUP BY YEAR(paid_at), MONTH(paid_at), month
-            ORDER BY YEAR(paid_at), MONTH(paid_at);
+            SELECT 
+                DATE_FORMAT(r.paid_at, '%b') as month, 
+                COALESCE(SUM(r.amount), 0) as revenue
+            FROM revenue r
+            LEFT JOIN students s ON r.student_id = s.id
+            WHERE r.paid_at >= CURDATE() - INTERVAL 12 MONTH
+            ${adminBranchId ? `AND s.branch_id = ${connection.escape(adminBranchId)}` : ''}
+            GROUP BY YEAR(r.paid_at), MONTH(r.paid_at)
+            ORDER BY YEAR(r.paid_at), MONTH(r.paid_at);
         `);
 
         // 5. School Population by Branch
@@ -336,31 +344,73 @@ router.get('/analysis-page', [auth, authorize(['SuperAdmin', 'Admin'])], async (
             SELECT 
                 b.school_name as school,
                 COUNT(DISTINCT s.id) as students,
-                COUNT(DISTINCT s.parent_id) as parents,
-                (SELECT COUNT(*) FROM new_students ns WHERE ns.branch_id = b.id) as newStudents
+                COUNT(DISTINCT p.id) as parents,
+                COALESCE(SUM(CASE WHEN ns.id IS NOT NULL THEN 1 ELSE 0 END), 0) as newStudents
             FROM branches b
             LEFT JOIN students s ON b.id = s.branch_id
-            ${branchFilter.replace('AND b.id', 'WHERE b.id')}
-            GROUP BY b.id;
+            LEFT JOIN parents p ON s.parent_id = p.id
+            LEFT JOIN new_students ns ON b.id = ns.branch_id
+            ${adminBranchId ? `WHERE b.id = ${connection.escape(adminBranchId)}` : ''}
+            GROUP BY b.id, b.school_name
+            ORDER BY b.school_name;
         `);
 
         // 6. Summary Cards Data
-        const totalRevenue = grossRevenueData.reduce((sum, item) => sum + item.value, 0);
-        const feesPaid = feesData.find((f) => f.name === "Paid")?.value ?? 0;
-        const feesOwing = feesData.find((f) => f.name === "Owing")?.value ?? 0;
-        const [totalBranches] = await connection.query(`SELECT COUNT(*) as count FROM branches ${simpleBranchFilter}`);
-        const avgMonthlyRevenue = monthlyRevenueData.length > 0 ? totalRevenue / monthlyRevenueData.length : 0;
+        const [[{ totalRevenue }]] = await connection.query(`
+            SELECT COALESCE(SUM(r.amount), 0) as totalRevenue
+            FROM revenue r
+            LEFT JOIN students s ON r.student_id = s.id
+            ${adminBranchId ? `WHERE s.branch_id = ${connection.escape(adminBranchId)}` : ''}
+        `);
 
+        // Calculate total fees due for relevant branches
+        const [[{ totalFeesDue }]] = await connection.query(`
+            SELECT COALESCE(SUM(f.amount), 0) as totalFeesDue
+            FROM fees f
+            ${adminBranchId ? `WHERE f.branch_id = ${connection.escape(adminBranchId)}` : ''}
+        `);
+
+        // Calculate total fees paid for relevant branches
+        const [[{ totalFeesPaid }]] = await connection.query(`
+            SELECT COALESCE(SUM(p.amount_paid), 0) as totalFeesPaid
+            FROM payments p
+            LEFT JOIN students s ON p.student_id = s.id
+            ${adminBranchId ? `WHERE s.branch_id = ${connection.escape(adminBranchId)}` : ''}
+        `);
+
+        const feesPaidPercentage = totalFeesDue > 0 ? (totalFeesPaid / totalFeesDue) * 100 : 0;
+        const feesOwingPercentage = 100 - feesPaidPercentage;
+
+        const [[{ totalBranchesCount }]] = await connection.query(`
+            SELECT COUNT(*) as totalBranchesCount FROM branches
+            ${adminBranchId ? `WHERE id = ${connection.escape(adminBranchId)}` : ''}
+        `);
+
+        // Calculate average monthly revenue over the last 12 months
+        const [monthlyRevenueSums] = await connection.query(`
+            SELECT SUM(r.amount) as monthly_revenue
+            FROM revenue r
+            LEFT JOIN students s ON r.student_id = s.id
+            WHERE r.paid_at >= CURDATE() - INTERVAL 12 MONTH
+            ${adminBranchId ? `AND s.branch_id = ${connection.escape(adminBranchId)}` : ''}
+            GROUP BY YEAR(r.paid_at), MONTH(r.paid_at)
+        `);
+
+        let avgMonthlyRevenue = 0;
+        if (monthlyRevenueSums.length > 0) {
+            const sumOfMonthlyRevenues = monthlyRevenueSums.reduce((sum, item) => sum + parseFloat(item.monthly_revenue), 0);
+            avgMonthlyRevenue = sumOfMonthlyRevenues / monthlyRevenueSums.length;
+        }
 
         res.json({
             success: true,
             data: {
                 summaryCards: {
-                    totalRevenue,
-                    feesPaid,
-                    feesOwing,
-                    totalBranches: totalBranches[0].count,
-                    avgMonthlyRevenue
+                    totalRevenue: parseFloat(totalRevenue).toFixed(2),
+                    feesPaid: Math.round(feesPaidPercentage),
+                    feesOwing: Math.round(feesOwingPercentage),
+                    totalBranches: totalBranchesCount,
+                    avgMonthlyRevenue: parseFloat(avgMonthlyRevenue).toFixed(2)
                 },
                 grossRevenueData,
                 feesData,
