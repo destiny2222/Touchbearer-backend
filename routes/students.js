@@ -49,6 +49,7 @@ async function generateStudentId() {
     return studentId;
 }
 
+
 function generatePassword() {
     const length = 10;
     const charset = '0123456789';
