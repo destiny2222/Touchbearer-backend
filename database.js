@@ -94,6 +94,7 @@ async function initializeDatabase() {
             CREATE TABLE IF NOT EXISTS branches (
                 id VARCHAR(36) PRIMARY KEY,
                 school_name VARCHAR(255) NOT NULL,
+                site_name VARCHAR(255),
                 address VARCHAR(255) NOT NULL,
                 email VARCHAR(255) NOT NULL,
                 basic_education JSON NOT NULL,
@@ -143,6 +144,7 @@ async function initializeDatabase() {
             CREATE TABLE IF NOT EXISTS classes (
                 id VARCHAR(36) PRIMARY KEY,
                 name VARCHAR(255) NOT NULL,
+                arm VARCHAR(100),
                 branch_id VARCHAR(36) NOT NULL,
                 teacher_id VARCHAR(36) NOT NULL,
                 total_student INT DEFAULT 0,
@@ -154,6 +156,22 @@ async function initializeDatabase() {
 
         const addStaffClassForeignKey = `
             ALTER TABLE staff ADD CONSTRAINT fk_staff_class_id FOREIGN KEY (class_id) REFERENCES classes(id) ON DELETE SET NULL;
+        `;
+
+        const createClassSubjectsTable = `
+            CREATE TABLE IF NOT EXISTS class_subjects (
+                id VARCHAR(36) PRIMARY KEY,
+                name VARCHAR(255) NOT NULL,
+                class_id VARCHAR(36) NOT NULL,
+                teacher_id VARCHAR(36) NOT NULL,
+                branch_id VARCHAR(36) NOT NULL,
+                description TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (class_id) REFERENCES classes(id) ON DELETE CASCADE,
+                FOREIGN KEY (teacher_id) REFERENCES staff(id) ON DELETE RESTRICT,
+                FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE
+            )
         `;
 
         const createNewStudentTable = `
@@ -293,6 +311,7 @@ async function initializeDatabase() {
             CREATE TABLE IF NOT EXISTS terms (
                 id VARCHAR(36) PRIMARY KEY,
                 name VARCHAR(255) NOT NULL,
+                session VARCHAR(50),
                 branch_id VARCHAR(36),
                 start_date DATE NOT NULL,
                 end_date DATE NOT NULL,
@@ -546,6 +565,7 @@ async function initializeDatabase() {
                 id VARCHAR(36) PRIMARY KEY,
                 branch_id VARCHAR(36) NOT NULL,
                 class_id VARCHAR(36) NOT NULL,
+                arm VARCHAR(100),
                 term_id VARCHAR(36) NOT NULL,
                 name VARCHAR(255) NOT NULL,
                 amount DECIMAL(10, 2) NOT NULL,
@@ -634,6 +654,33 @@ async function initializeDatabase() {
             )
         `;
 
+        const createStudentResultsTable = `
+            CREATE TABLE IF NOT EXISTS student_results (
+                id VARCHAR(36) PRIMARY KEY,
+                student_id VARCHAR(36) NOT NULL,
+                class_id VARCHAR(36) NOT NULL,
+                subject_id VARCHAR(36) NOT NULL,
+                term_id VARCHAR(36),
+                assessment_type ENUM('ca1', 'ca2', 'ca3', 'exam') NOT NULL,
+                score DECIMAL(5, 2) NOT NULL,
+                teacher_id VARCHAR(36) NOT NULL,
+                branch_id VARCHAR(36) NOT NULL,
+                published BOOLEAN DEFAULT FALSE,
+                published_by VARCHAR(36),
+                published_at TIMESTAMP NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY unique_student_subject_term_assessment (student_id, subject_id, term_id, assessment_type),
+                FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
+                FOREIGN KEY (class_id) REFERENCES classes(id) ON DELETE CASCADE,
+                FOREIGN KEY (subject_id) REFERENCES class_subjects(id) ON DELETE CASCADE,
+                FOREIGN KEY (term_id) REFERENCES terms(id) ON DELETE SET NULL,
+                FOREIGN KEY (teacher_id) REFERENCES staff(id) ON DELETE RESTRICT,
+                FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE,
+                FOREIGN KEY (published_by) REFERENCES users(id) ON DELETE SET NULL
+            )
+        `;
+
         // Create tables in the correct order
         await connection.query(createUsersTable);
         console.log("Users table created");
@@ -679,12 +726,49 @@ async function initializeDatabase() {
         console.log("Super Admins table created");
         await connection.query(createBranchesTable);
         console.log("Branches table created");
+
+        // Add site_name column to branches if it doesn't exist
+        try {
+            const [branchColumns] = await connection.query(`
+                SELECT COLUMN_NAME 
+                FROM INFORMATION_SCHEMA.COLUMNS 
+                WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'branches'
+            `, [dbName]);
+
+            const existingBranchCols = branchColumns.map(row => row.COLUMN_NAME);
+
+            if (!existingBranchCols.includes('site_name')) {
+                await connection.query('ALTER TABLE branches ADD COLUMN site_name VARCHAR(255) AFTER school_name');
+                console.log("Added 'site_name' column to branches table");
+            }
+        } catch (error) {
+            console.log("Error updating branches table:", error.message);
+        }
+
         await connection.query(createBranchLocationsTable);
         console.log("Branch locations table created");
         await connection.query(createStaffTable);
         console.log("Staff table created (without FK to classes)");
         await connection.query(createClassesTable);
         console.log("Classes table created");
+
+        // Add arm column to classes if it doesn't exist
+        try {
+            const [classColumns] = await connection.query(`
+                SELECT COLUMN_NAME 
+                FROM INFORMATION_SCHEMA.COLUMNS 
+                WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'classes'
+            `, [dbName]);
+
+            const existingClassCols = classColumns.map(row => row.COLUMN_NAME);
+
+            if (!existingClassCols.includes('arm')) {
+                await connection.query('ALTER TABLE classes ADD COLUMN arm VARCHAR(100) AFTER name');
+                console.log("Added 'arm' column to classes table");
+            }
+        } catch (error) {
+            console.log("Error updating classes table:", error.message);
+        }
 
         // Add the foreign key constraint back to staff
         try {
@@ -696,6 +780,9 @@ async function initializeDatabase() {
             }
             console.log("Foreign key from staff to classes already exists.");
         }
+
+        await connection.query(createClassSubjectsTable);
+        console.log("Class subjects table created");
 
         await connection.query(createStudentTable);
         console.log("Students table created");
@@ -798,6 +885,24 @@ async function initializeDatabase() {
         console.log("Expenses table created");
         await connection.query(createTermsTable);
         console.log("Terms table created");
+
+        // Add session column to terms if it doesn't exist
+        try {
+            const [termColumns] = await connection.query(`
+                SELECT COLUMN_NAME 
+                FROM INFORMATION_SCHEMA.COLUMNS 
+                WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'terms'
+            `, [dbName]);
+
+            const existingTermCols = termColumns.map(row => row.COLUMN_NAME);
+
+            if (!existingTermCols.includes('session')) {
+                await connection.query('ALTER TABLE terms ADD COLUMN session VARCHAR(50) AFTER name');
+                console.log("Added 'session' column to terms table");
+            }
+        } catch (error) {
+            console.log("Error updating terms table:", error.message);
+        }
         await connection.query(createExamsTable);
         console.log("Exams table created");
         await connection.query(createSubjectsTable);
@@ -830,6 +935,24 @@ async function initializeDatabase() {
         console.log("Student book purchases table created");
         await connection.query(createFeesTable);
         console.log("Fees table created");
+
+        // Add arm column to fees if it doesn't exist
+        try {
+            const [feeColumns] = await connection.query(`
+                SELECT COLUMN_NAME 
+                FROM INFORMATION_SCHEMA.COLUMNS 
+                WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'fees'
+            `, [dbName]);
+
+            const existingFeeCols = feeColumns.map(row => row.COLUMN_NAME);
+
+            if (!existingFeeCols.includes('arm')) {
+                await connection.query('ALTER TABLE fees ADD COLUMN arm VARCHAR(100) AFTER class_id');
+                console.log("Added 'arm' column to fees table");
+            }
+        } catch (error) {
+            console.log("Error updating fees table:", error.message);
+        }
         await connection.query(createPaymentsTable);
         console.log("Payments table created");
         await connection.query(createStudentPaymentStatusTable);
@@ -842,6 +965,50 @@ async function initializeDatabase() {
         console.log("Inventory table created");
         await connection.query(createRevenueTable);
         console.log("Revenue table created");
+        await connection.query(createStudentResultsTable);
+        console.log("Student results table created");
+
+        // Add published fields to student_results if they don't exist
+        try {
+            const [resultColumns] = await connection.query(`
+                SELECT COLUMN_NAME 
+                FROM INFORMATION_SCHEMA.COLUMNS 
+                WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'student_results'
+            `, [dbName]);
+
+            const existingResultCols = resultColumns.map(row => row.COLUMN_NAME);
+
+            if (!existingResultCols.includes('published')) {
+                await connection.query('ALTER TABLE student_results ADD COLUMN published BOOLEAN DEFAULT FALSE AFTER branch_id');
+                console.log("Added 'published' column to student_results table");
+            }
+            if (!existingResultCols.includes('published_by')) {
+                await connection.query('ALTER TABLE student_results ADD COLUMN published_by VARCHAR(36) AFTER published');
+                console.log("Added 'published_by' column to student_results table");
+            }
+            if (!existingResultCols.includes('published_at')) {
+                await connection.query('ALTER TABLE student_results ADD COLUMN published_at TIMESTAMP NULL AFTER published_by');
+                console.log("Added 'published_at' column to student_results table");
+            }
+
+            // Add foreign key for published_by if it doesn't exist
+            try {
+                const [constraints] = await connection.query(`
+                    SELECT CONSTRAINT_NAME 
+                    FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE 
+                    WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'student_results' AND COLUMN_NAME = 'published_by' AND CONSTRAINT_NAME LIKE 'fk_%'
+                `, [dbName]);
+
+                if (constraints.length === 0 && existingResultCols.includes('published_by')) {
+                    await connection.query('ALTER TABLE student_results ADD CONSTRAINT fk_results_published_by FOREIGN KEY (published_by) REFERENCES users(id) ON DELETE SET NULL');
+                    console.log("Added foreign key for 'published_by' to student_results table");
+                }
+            } catch (fkError) {
+                console.log("Foreign key for published_by may already exist or error:", fkError.message);
+            }
+        } catch (error) {
+            console.log("Error updating student_results table:", error.message);
+        }
 
         const roles = ['NewStudent', 'Student', 'Teacher', 'Parent', 'Admin', 'SuperAdmin', 'NonTeachingStaff'];
         for (const role of roles) {

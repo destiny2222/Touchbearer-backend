@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { v4: uuidv4 } = require('uuid');
-const { pool } = require('../database');const auth = require('../middleware/auth');
+const { pool } = require('../database'); const auth = require('../middleware/auth');
 const authorize = require('../middleware/authorize');
 
 async function getAdminBranchId(userId) {
@@ -9,9 +9,9 @@ async function getAdminBranchId(userId) {
     return rows.length > 0 ? rows[0].branch_id : null;
 }
 
-// POST /api/fees - Create school fees for a class
+// POST /api/fees - Create school fees for a class (and optionally an arm)
 router.post('/', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => {
-    const { branch_id, class_id, term_id, name, amount, description } = req.body;
+    const { branch_id, class_id, arm, term_id, name, amount, description } = req.body;
 
     if (!branch_id || !class_id || !term_id || !name || !amount) {
         return res.status(400).json({ success: false, message: 'Missing required fields.' });
@@ -29,6 +29,7 @@ router.post('/', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) =>
             id: uuidv4(),
             branch_id,
             class_id,
+            arm: arm || null,
             term_id,
             name,
             amount,
@@ -45,7 +46,7 @@ router.post('/', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) =>
 // PUT /api/fees/:id - Update school fees for a class
 router.put('/:id', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => {
     const { id } = req.params;
-    const { name, amount, description } = req.body;
+    const { name, arm, amount, description } = req.body;
 
     try {
         const [feeRows] = await pool.query('SELECT * FROM fees WHERE id = ?', [id]);
@@ -63,6 +64,7 @@ router.put('/:id', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) 
 
         const updateFields = {};
         if (name) updateFields.name = name;
+        if (arm !== undefined) updateFields.arm = arm;
         if (amount) updateFields.amount = amount;
         if (description) updateFields.description = description;
 
@@ -77,9 +79,11 @@ router.put('/:id', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) 
     }
 });
 
-// GET /api/fees/class/:classId - Retrieve fees for a specific class
+// GET /api/fees/class/:classId - Retrieve fees for a specific class (optionally filter by arm)
 router.get('/class/:classId', [auth], async (req, res) => {
     const { classId } = req.params;
+    const { arm } = req.query; // Optional filter by arm
+
     try {
         const [activeTerm] = await pool.query('SELECT id FROM terms WHERE is_active = TRUE');
         if (activeTerm.length === 0) {
@@ -87,7 +91,15 @@ router.get('/class/:classId', [auth], async (req, res) => {
         }
         const term_id = activeTerm[0].id;
 
-        const [fees] = await pool.query('SELECT * FROM fees WHERE class_id = ? AND term_id = ?', [classId, term_id]);
+        let query = 'SELECT * FROM fees WHERE class_id = ? AND term_id = ?';
+        const params = [classId, term_id];
+
+        if (arm) {
+            query += ' AND arm = ?';
+            params.push(arm);
+        }
+
+        const [fees] = await pool.query(query, params);
         res.json({ success: true, data: fees });
     } catch (error) {
         console.error('Get fees by class error:', error);
@@ -116,8 +128,16 @@ router.get('/children', [auth, authorize(['Parent'])], async (req, res) => {
         const term_id = activeTerm[0].id;
 
         const feesByChild = await Promise.all(children.map(async (child) => {
-            const [fees] = await pool.query('SELECT * FROM fees WHERE class_id = ? AND term_id = ?', [child.class_id, term_id]);
-            const [totalFeesRow] = await pool.query('SELECT SUM(amount) as total_fees FROM fees WHERE class_id = ? AND term_id = ?', [child.class_id, term_id]);
+            // Get the child's class arm
+            const [classInfo] = await pool.query('SELECT arm FROM classes WHERE id = ?', [child.class_id]);
+            const childArm = classInfo.length > 0 ? classInfo[0].arm : null;
+
+            // Get fees for this class and term, matching the arm (or fees without specific arm)
+            let feesQuery = 'SELECT * FROM fees WHERE class_id = ? AND term_id = ? AND (arm IS NULL OR arm = ?)';
+            const [fees] = await pool.query(feesQuery, [child.class_id, term_id, childArm]);
+
+            let totalFeesQuery = 'SELECT SUM(amount) as total_fees FROM fees WHERE class_id = ? AND term_id = ? AND (arm IS NULL OR arm = ?)';
+            const [totalFeesRow] = await pool.query(totalFeesQuery, [child.class_id, term_id, childArm]);
             const total_fees = totalFeesRow[0].total_fees || 0;
 
             const [totalPaidRow] = await pool.query('SELECT SUM(amount_paid) as total_paid FROM payments WHERE student_id = ? AND term_id = ?', [child.id, term_id]);
@@ -130,6 +150,7 @@ router.get('/children', [auth, authorize(['Parent'])], async (req, res) => {
                 child_id: child.id,
                 child_name: `${child.first_name} ${child.last_name}`,
                 class_id: child.class_id,
+                class_arm: childArm,
                 term_id,
                 fees,
                 total_fees,
@@ -152,9 +173,10 @@ router.get('/', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => 
         let query = `
             SELECT 
                 f.id, f.name, f.amount, f.description, 
-                f.branch_id, f.class_id, f.term_id,
+                f.branch_id, f.class_id, f.arm, f.term_id,
                 b.school_name as BranchName,
                 c.name as ClassName,
+                c.arm as ClassArm,
                 t.name as TermName
             FROM fees f
             JOIN branches b ON f.branch_id = b.id

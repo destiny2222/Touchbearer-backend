@@ -38,7 +38,7 @@ router.get('/', auth, async (req, res) => {
 
 // POST /api/terms/new - Trigger a new term (reset payment statuses but keep history)
 router.post('/new', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => {
-    const { name, start_date, end_date, branch_id } = req.body; // branch_id is optional
+    const { name, session, start_date, end_date, branch_id } = req.body; // session and branch_id are optional
 
     if (!name || !start_date || !end_date) {
         return res.status(400).json({ success: false, message: 'Missing required fields.' });
@@ -75,6 +75,7 @@ router.post('/new', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res)
         const newTerm = {
             id: newTermId,
             name,
+            session: session || null,
             branch_id: termBranchId || null,
             start_date,
             end_date,

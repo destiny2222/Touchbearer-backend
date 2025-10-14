@@ -10,6 +10,30 @@ async function getAdminBranchId(userId) {
     return rows.length > 0 ? rows[0].branch_id : null;
 }
 
+async function getTeacherClasses(userId) {
+    // Get teacher's staff record
+    const [staffRows] = await pool.query('SELECT id, class_id, branch_id FROM staff WHERE user_id = ?', [userId]);
+    if (staffRows.length === 0) return { classIds: [], branchId: null };
+
+    const staff = staffRows[0];
+    const classIds = [];
+
+    // Add class from staff.class_id if exists
+    if (staff.class_id) {
+        classIds.push(staff.class_id);
+    }
+
+    // Also get all classes where this teacher is assigned as teacher_id
+    const [classRows] = await pool.query('SELECT id FROM classes WHERE teacher_id = ?', [staff.id]);
+    classRows.forEach(row => {
+        if (!classIds.includes(row.id)) {
+            classIds.push(row.id);
+        }
+    });
+
+    return { classIds, branchId: staff.branch_id };
+}
+
 async function generateStudentId() {
     const prefix = 'ttb';
     const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
@@ -27,14 +51,14 @@ async function generateStudentId() {
 
 function generatePassword() {
     const length = 10;
-    const charset = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$';
+    const charset = '0123456789';
     let password = '';
     for (let i = 0; i < length; i++) password += charset.charAt(Math.floor(Math.random() * charset.length));
     return password;
 }
 
 // POST /api/students/create - Create a student and associate to an existing parent (by email) or fail
-router.post('/create', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => {
+router.post('/create', [auth, authorize(['Admin', 'SuperAdmin', 'Teacher'])], async (req, res) => {
     const {
         first_name, last_name, dob, passport, address, nationality, state,
         class_id, branch_id, religion, disability,
@@ -56,6 +80,22 @@ router.post('/create', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, r
             const adminBranchId = await getAdminBranchId(req.user.id);
             if (!adminBranchId || adminBranchId !== branch_id) {
                 return res.status(403).json({ success: false, message: 'Admins can only create students for their own branch.' });
+            }
+        }
+
+        if (req.user.roles.includes('Teacher') && !req.user.roles.includes('Admin') && !req.user.roles.includes('SuperAdmin')) {
+            const { classIds, branchId } = await getTeacherClasses(req.user.id);
+
+            if (classIds.length === 0) {
+                return res.status(403).json({ success: false, message: 'Teacher has no assigned classes.' });
+            }
+
+            if (!classIds.includes(class_id)) {
+                return res.status(403).json({ success: false, message: 'Teachers can only create students for their assigned classes.' });
+            }
+
+            if (branchId && branchId !== branch_id) {
+                return res.status(403).json({ success: false, message: 'Teachers can only create students for their own branch.' });
             }
         }
 
@@ -486,6 +526,75 @@ router.post('/migrate/:newStudentId', [auth, authorize(['Admin', 'SuperAdmin'])]
         return res.status(500).json({ success: false, message: 'Server error while migrating student.' });
     } finally {
         connection.release();
+    }
+});
+
+// GET /api/students/class/:class_id - Get all students for a specific class by class_id
+router.get('/class/:class_id', [auth, authorize(['Teacher', 'Admin', 'SuperAdmin'])], async (req, res) => {
+    const { class_id } = req.params;
+
+    try {
+        // Verify class exists
+        const [classInfo] = await pool.query('SELECT id, branch_id, name FROM classes WHERE id = ?', [class_id]);
+        if (classInfo.length === 0) {
+            return res.status(404).json({ success: false, message: 'Class not found.' });
+        }
+        const classData = classInfo[0];
+
+        // Authorization checks
+        if (req.user.roles.includes('Teacher') && !req.user.roles.includes('Admin') && !req.user.roles.includes('SuperAdmin')) {
+            const { classIds } = await getTeacherClasses(req.user.id);
+
+            if (!classIds.includes(class_id)) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'You are not authorized to view students for this class. You can only view students from classes you teach.'
+                });
+            }
+        }
+
+        if (req.user.roles.includes('Admin') && !req.user.roles.includes('SuperAdmin')) {
+            const adminBranchId = await getAdminBranchId(req.user.id);
+            if (!adminBranchId || adminBranchId !== classData.branch_id) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'You can only view students from classes in your branch.'
+                });
+            }
+        }
+
+        // Fetch students in that class
+        const query = `
+            SELECT 
+                s.id, s.user_id, s.first_name, s.last_name, s.surname_name, s.other_names,
+                s.gender, s.dob, s.address, s.nationality, s.state, s.religion, 
+                s.disability, s.passport, s.blood_group, s.genotype, s.allergies,
+                p.name AS parent_name, p.email AS parent_email, p.phone AS parent_phone,
+                c.name AS class_name, b.school_name AS branch_name
+            FROM students s
+            LEFT JOIN parents p ON s.parent_id = p.id
+            LEFT JOIN classes c ON s.class_id = c.id
+            LEFT JOIN branches b ON s.branch_id = b.id
+            WHERE s.class_id = ?
+            ORDER BY s.last_name ASC, s.first_name ASC
+        `;
+
+        const [students] = await pool.query(query, [class_id]);
+
+        res.json({
+            success: true,
+            count: students.length,
+            class_info: {
+                id: classData.id,
+                name: classData.name,
+                branch_id: classData.branch_id
+            },
+            data: students
+        });
+
+    } catch (error) {
+        console.error('Error fetching students by class:', error);
+        res.status(500).json({ success: false, message: 'Server error while fetching students.' });
     }
 });
 

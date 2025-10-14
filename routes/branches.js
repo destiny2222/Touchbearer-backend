@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { pool } = require('../database');const { v4: uuidv4 } = require('uuid');
+const { pool } = require('../database'); const { v4: uuidv4 } = require('uuid');
 const auth = require('../middleware/auth');
 
 router.post('/store', auth, async (req, res) => {
@@ -8,7 +8,7 @@ router.post('/store', auth, async (req, res) => {
         return res.status(403).json({ message: 'Access denied' });
     }
 
-    const { school_name, address, "admin-email": email, basic_education, is_active } = req.body;
+    const { school_name, site_name, address, "admin-email": email, basic_education, is_active } = req.body;
 
     if (!school_name || !address || !email || !basic_education) {
         return res.status(400).json({ message: 'Please enter all fields' });
@@ -19,13 +19,14 @@ router.post('/store', auth, async (req, res) => {
         const branchData = {
             id: branchId,
             school_name,
+            site_name: site_name || null,
             address,
             email,
             basic_education: JSON.stringify(basic_education),
             is_active: is_active || 1
         };
         await pool.query('INSERT INTO branches SET ?', branchData);
-        res.status(201).json({ message: 'Branch created' });
+        res.status(201).json({ message: 'Branch created', data: branchData });
     } catch (err) {
         console.error(err);
         res.status(500).json({ message: 'Server error' });
@@ -37,14 +38,17 @@ router.put('/:branchId/update', auth, async (req, res) => {
         return res.status(403).json({ message: 'Access denied' });
     }
 
-    const { school_name, "admin-address": address, email, basic_education, is_active } = req.body;
+    const { school_name, site_name, "admin-address": address, email, basic_education, is_active } = req.body;
 
     if (!school_name || !address || !email || !basic_education) {
         return res.status(400).json({ message: 'Please enter all fields' });
     }
 
     try {
-        await pool.query('UPDATE branches SET school_name = ?, address = ?, email = ?, basic_education = ?, is_active = ? WHERE id = ?', [school_name, address, email, JSON.stringify(basic_education), is_active, req.params.branchId]);
+        await pool.query(
+            'UPDATE branches SET school_name = ?, site_name = ?, address = ?, email = ?, basic_education = ?, is_active = ? WHERE id = ?',
+            [school_name, site_name || null, address, email, JSON.stringify(basic_education), is_active, req.params.branchId]
+        );
         res.json({ message: 'Branch updated' });
     } catch (err) {
         console.error(err);

@@ -1,0 +1,665 @@
+const express = require('express');
+const router = express.Router();
+const { v4: uuidv4 } = require('uuid');
+const { pool } = require('../database');
+const auth = require('../middleware/auth');
+const authorize = require('../middleware/authorize');
+
+// Helper function to get staff info and verify teacher authorization
+async function getStaffInfo(userId) {
+    const [rows] = await pool.query('SELECT id, branch_id FROM staff WHERE user_id = ?', [userId]);
+    return rows.length > 0 ? rows[0] : null;
+}
+
+// Helper function to check if teacher can manage this subject
+async function canTeacherManageSubject(teacherStaffId, subjectId) {
+    const [rows] = await pool.query(
+        'SELECT id FROM class_subjects WHERE id = ? AND teacher_id = ?',
+        [subjectId, teacherStaffId]
+    );
+    return rows.length > 0;
+}
+
+// POST /api/results/save - Save or update student results (Upsert)
+router.post('/save', [auth, authorize(['Teacher', 'Admin', 'SuperAdmin'])], async (req, res) => {
+    const { class_id, subject_id, assessment_type, scores } = req.body;
+
+    // Validation
+    if (!class_id || !subject_id || !assessment_type || !scores || !Array.isArray(scores)) {
+        return res.status(400).json({
+            success: false,
+            message: 'Missing required fields: class_id, subject_id, assessment_type, and scores array are required.'
+        });
+    }
+
+    // Validate assessment_type
+    const validAssessmentTypes = ['ca1', 'ca2', 'ca3', 'exam'];
+    if (!validAssessmentTypes.includes(assessment_type)) {
+        return res.status(400).json({
+            success: false,
+            message: 'Invalid assessment_type. Must be one of: ca1, ca2, ca3, exam'
+        });
+    }
+
+    if (scores.length === 0) {
+        return res.status(400).json({
+            success: false,
+            message: 'Scores array cannot be empty.'
+        });
+    }
+
+    // Validate each score entry
+    for (const entry of scores) {
+        if (!entry.student_id || entry.score === undefined || entry.score === null) {
+            return res.status(400).json({
+                success: false,
+                message: 'Each score entry must have student_id and score.'
+            });
+        }
+        if (typeof entry.score !== 'number' || entry.score < 0 || entry.score > 100) {
+            return res.status(400).json({
+                success: false,
+                message: 'Score must be a number between 0 and 100.'
+            });
+        }
+    }
+
+    const connection = await pool.getConnection();
+    try {
+        await connection.beginTransaction();
+
+        // Verify class exists and get branch_id
+        const [classInfo] = await connection.query(
+            'SELECT id, branch_id FROM classes WHERE id = ?',
+            [class_id]
+        );
+        if (classInfo.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ success: false, message: 'Class not found.' });
+        }
+        const branch_id = classInfo[0].branch_id;
+
+        // Verify subject exists and belongs to this class
+        const [subjectInfo] = await connection.query(
+            'SELECT id, class_id, teacher_id FROM class_subjects WHERE id = ?',
+            [subject_id]
+        );
+        if (subjectInfo.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ success: false, message: 'Subject not found.' });
+        }
+        if (subjectInfo[0].class_id !== class_id) {
+            await connection.rollback();
+            return res.status(400).json({
+                success: false,
+                message: 'Subject does not belong to the specified class.'
+            });
+        }
+
+        // Get teacher's staff info
+        const staffInfo = await getStaffInfo(req.user.id);
+        if (!staffInfo) {
+            await connection.rollback();
+            return res.status(403).json({ success: false, message: 'Staff record not found.' });
+        }
+
+        // Authorization checks
+        if (req.user.roles.includes('Teacher') && !req.user.roles.includes('Admin') && !req.user.roles.includes('SuperAdmin')) {
+            // Teacher can only save results for subjects they teach
+            const canManage = await canTeacherManageSubject(staffInfo.id, subject_id);
+            if (!canManage) {
+                await connection.rollback();
+                return res.status(403).json({
+                    success: false,
+                    message: 'You can only save results for subjects you teach.'
+                });
+            }
+
+            // Verify branch matches
+            if (staffInfo.branch_id !== branch_id) {
+                await connection.rollback();
+                return res.status(403).json({
+                    success: false,
+                    message: 'You can only save results for your own branch.'
+                });
+            }
+        }
+
+        if (req.user.roles.includes('Admin') && !req.user.roles.includes('SuperAdmin')) {
+            // Admin can only manage results in their branch
+            if (staffInfo.branch_id !== branch_id) {
+                await connection.rollback();
+                return res.status(403).json({
+                    success: false,
+                    message: 'Admins can only save results for their own branch.'
+                });
+            }
+        }
+
+        // Get active term for the branch
+        const [activeTerm] = await connection.query(
+            'SELECT id FROM terms WHERE is_active = TRUE AND (branch_id = ? OR branch_id IS NULL) ORDER BY branch_id DESC LIMIT 1',
+            [branch_id]
+        );
+        const term_id = activeTerm.length > 0 ? activeTerm[0].id : null;
+
+        // Verify all students exist and belong to the class
+        const studentIds = scores.map(s => s.student_id);
+        const [students] = await connection.query(
+            'SELECT id FROM students WHERE id IN (?) AND class_id = ?',
+            [studentIds, class_id]
+        );
+
+        if (students.length !== studentIds.length) {
+            await connection.rollback();
+            return res.status(400).json({
+                success: false,
+                message: 'One or more students not found in the specified class.'
+            });
+        }
+
+        // Upsert logic: Insert or update each score
+        let insertedCount = 0;
+        let updatedCount = 0;
+
+        for (const scoreEntry of scores) {
+            const { student_id, score } = scoreEntry;
+
+            // Check if a record already exists
+            const [existing] = await connection.query(
+                'SELECT id FROM student_results WHERE student_id = ? AND subject_id = ? AND term_id = ? AND assessment_type = ?',
+                [student_id, subject_id, term_id, assessment_type]
+            );
+
+            if (existing.length > 0) {
+                // Update existing record
+                await connection.query(
+                    'UPDATE student_results SET score = ?, teacher_id = ?, updated_at = NOW() WHERE id = ?',
+                    [score, staffInfo.id, existing[0].id]
+                );
+                updatedCount++;
+            } else {
+                // Insert new record
+                const resultId = uuidv4();
+                await connection.query(
+                    'INSERT INTO student_results (id, student_id, class_id, subject_id, term_id, assessment_type, score, teacher_id, branch_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                    [resultId, student_id, class_id, subject_id, term_id, assessment_type, score, staffInfo.id, branch_id]
+                );
+                insertedCount++;
+            }
+        }
+
+        await connection.commit();
+
+        res.status(200).json({
+            success: true,
+            message: 'Results saved successfully.',
+            data: {
+                inserted: insertedCount,
+                updated: updatedCount,
+                total: scores.length
+            }
+        });
+
+    } catch (err) {
+        await connection.rollback();
+        console.error('Error saving results:', err);
+        res.status(500).json({ success: false, message: 'Server error while saving results.' });
+    } finally {
+        connection.release();
+    }
+});
+
+// GET /api/results/class/:class_id/subject/:subject_id - Get results for a class and subject
+// Optional query param: assessment_type (ca1, ca2, ca3, exam)
+router.get('/class/:class_id/subject/:subject_id', [auth, authorize(['Teacher', 'Admin', 'SuperAdmin'])], async (req, res) => {
+    const { class_id, subject_id } = req.params;
+    const { assessment_type } = req.query; // Optional filter
+
+    try {
+        // Verify class and subject exist
+        const [classInfo] = await pool.query('SELECT id, branch_id FROM classes WHERE id = ?', [class_id]);
+        if (classInfo.length === 0) {
+            return res.status(404).json({ success: false, message: 'Class not found.' });
+        }
+        const branch_id = classInfo[0].branch_id;
+
+        const [subjectInfo] = await pool.query('SELECT id FROM class_subjects WHERE id = ? AND class_id = ?', [subject_id, class_id]);
+        if (subjectInfo.length === 0) {
+            return res.status(404).json({ success: false, message: 'Subject not found for this class.' });
+        }
+
+        // Authorization checks
+        const staffInfo = await getStaffInfo(req.user.id);
+        if (!staffInfo) {
+            return res.status(403).json({ success: false, message: 'Staff record not found.' });
+        }
+
+        if (req.user.roles.includes('Teacher') && !req.user.roles.includes('Admin') && !req.user.roles.includes('SuperAdmin')) {
+            const canManage = await canTeacherManageSubject(staffInfo.id, subject_id);
+            if (!canManage) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'You can only view results for subjects you teach.'
+                });
+            }
+        }
+
+        if (req.user.roles.includes('Admin') && !req.user.roles.includes('SuperAdmin')) {
+            if (staffInfo.branch_id !== branch_id) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Admins can only view results for their own branch.'
+                });
+            }
+        }
+
+        // Get active term
+        const [activeTerm] = await pool.query(
+            'SELECT id FROM terms WHERE is_active = TRUE AND (branch_id = ? OR branch_id IS NULL) ORDER BY branch_id DESC LIMIT 1',
+            [branch_id]
+        );
+        const term_id = activeTerm.length > 0 ? activeTerm[0].id : null;
+
+        // Fetch results
+        let query = `
+            SELECT 
+                sr.id,
+                sr.student_id,
+                s.first_name,
+                s.last_name,
+                sr.assessment_type,
+                sr.score,
+                sr.created_at,
+                sr.updated_at,
+                st.name as teacher_name
+            FROM student_results sr
+            LEFT JOIN students s ON sr.student_id = s.id
+            LEFT JOIN staff st ON sr.teacher_id = st.id
+            WHERE sr.class_id = ? AND sr.subject_id = ? AND sr.term_id = ?
+        `;
+
+        const queryParams = [class_id, subject_id, term_id];
+
+        // Optional filter by assessment_type
+        if (assessment_type) {
+            const validTypes = ['ca1', 'ca2', 'ca3', 'exam'];
+            if (!validTypes.includes(assessment_type)) {
+                return res.status(400).json({
+                    success: false,
+                    message: 'Invalid assessment_type. Must be one of: ca1, ca2, ca3, exam'
+                });
+            }
+            query += ' AND sr.assessment_type = ?';
+            queryParams.push(assessment_type);
+        }
+
+        query += ' ORDER BY s.last_name ASC, s.first_name ASC';
+
+        const [results] = await pool.query(query, queryParams);
+
+        res.json({
+            success: true,
+            count: results.length,
+            data: results
+        });
+
+    } catch (err) {
+        console.error('Error fetching results:', err);
+        res.status(500).json({ success: false, message: 'Server error while fetching results.' });
+    }
+});
+
+// GET /api/results/student/:student_id - Get all results for a specific student
+router.get('/student/:student_id', [auth, authorize(['Teacher', 'Admin', 'SuperAdmin', 'Student', 'Parent'])], async (req, res) => {
+    const { student_id } = req.params;
+
+    try {
+        // Verify student exists
+        const [student] = await pool.query('SELECT id, class_id, branch_id, user_id, parent_id FROM students WHERE id = ?', [student_id]);
+        if (student.length === 0) {
+            return res.status(404).json({ success: false, message: 'Student not found.' });
+        }
+        const studentData = student[0];
+
+        // Authorization checks
+        if (req.user.roles.includes('Student')) {
+            // Students can only view their own results
+            if (studentData.user_id !== req.user.id) {
+                return res.status(403).json({ success: false, message: 'You can only view your own results.' });
+            }
+        }
+
+        if (req.user.roles.includes('Parent')) {
+            // Parents can only view their children's results
+            const [parent] = await pool.query('SELECT id FROM parents WHERE user_id = ?', [req.user.id]);
+            if (parent.length === 0 || parent[0].id !== studentData.parent_id) {
+                return res.status(403).json({ success: false, message: 'You can only view your own children\'s results.' });
+            }
+        }
+
+        if (req.user.roles.includes('Teacher') && !req.user.roles.includes('Admin') && !req.user.roles.includes('SuperAdmin')) {
+            // Teachers can only view results for students in classes they teach
+            const staffInfo = await getStaffInfo(req.user.id);
+            if (!staffInfo) {
+                return res.status(403).json({ success: false, message: 'Staff record not found.' });
+            }
+
+            const [teacherClasses] = await pool.query('SELECT id FROM classes WHERE teacher_id = ?', [staffInfo.id]);
+            const classIds = teacherClasses.map(c => c.id);
+
+            if (!classIds.includes(studentData.class_id)) {
+                return res.status(403).json({ success: false, message: 'You can only view results for students in your classes.' });
+            }
+        }
+
+        if (req.user.roles.includes('Admin') && !req.user.roles.includes('SuperAdmin')) {
+            const staffInfo = await getStaffInfo(req.user.id);
+            if (staffInfo && staffInfo.branch_id !== studentData.branch_id) {
+                return res.status(403).json({ success: false, message: 'Admins can only view results for their own branch.' });
+            }
+        }
+
+        // Get active term
+        const [activeTerm] = await pool.query(
+            'SELECT id FROM terms WHERE is_active = TRUE AND (branch_id = ? OR branch_id IS NULL) ORDER BY branch_id DESC LIMIT 1',
+            [studentData.branch_id]
+        );
+        const term_id = activeTerm.length > 0 ? activeTerm[0].id : null;
+
+        // Fetch results
+        const query = `
+            SELECT 
+                sr.id,
+                sr.assessment_type,
+                sr.score,
+                cs.name as subject_name,
+                sr.created_at,
+                sr.updated_at,
+                st.name as teacher_name
+            FROM student_results sr
+            LEFT JOIN class_subjects cs ON sr.subject_id = cs.id
+            LEFT JOIN staff st ON sr.teacher_id = st.id
+            WHERE sr.student_id = ? AND sr.term_id = ?
+            ORDER BY cs.name ASC, sr.assessment_type ASC
+        `;
+
+        const [results] = await pool.query(query, [student_id, term_id]);
+
+        res.json({
+            success: true,
+            count: results.length,
+            data: results
+        });
+
+    } catch (err) {
+        console.error('Error fetching student results:', err);
+        res.status(500).json({ success: false, message: 'Server error while fetching student results.' });
+    }
+});
+
+// DELETE /api/results/:result_id - Delete a specific result
+router.delete('/:result_id', [auth, authorize(['Teacher', 'Admin', 'SuperAdmin'])], async (req, res) => {
+    const { result_id } = req.params;
+
+    try {
+        // Get result info
+        const [result] = await pool.query(
+            'SELECT id, subject_id, branch_id, teacher_id FROM student_results WHERE id = ?',
+            [result_id]
+        );
+        if (result.length === 0) {
+            return res.status(404).json({ success: false, message: 'Result not found.' });
+        }
+        const resultData = result[0];
+
+        // Authorization checks
+        const staffInfo = await getStaffInfo(req.user.id);
+        if (!staffInfo) {
+            return res.status(403).json({ success: false, message: 'Staff record not found.' });
+        }
+
+        if (req.user.roles.includes('Teacher') && !req.user.roles.includes('Admin') && !req.user.roles.includes('SuperAdmin')) {
+            // Teachers can only delete results they created for subjects they teach
+            const canManage = await canTeacherManageSubject(staffInfo.id, resultData.subject_id);
+            if (!canManage || resultData.teacher_id !== staffInfo.id) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'You can only delete results you created for subjects you teach.'
+                });
+            }
+        }
+
+        if (req.user.roles.includes('Admin') && !req.user.roles.includes('SuperAdmin')) {
+            if (staffInfo.branch_id !== resultData.branch_id) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Admins can only delete results for their own branch.'
+                });
+            }
+        }
+
+        // Delete the result
+        await pool.query('DELETE FROM student_results WHERE id = ?', [result_id]);
+
+        res.json({
+            success: true,
+            message: 'Result deleted successfully.'
+        });
+
+    } catch (err) {
+        console.error('Error deleting result:', err);
+        res.status(500).json({ success: false, message: 'Server error while deleting result.' });
+    }
+});
+
+// POST /api/results/publish-all - Publish all results for a specific session/term/class/arm
+router.post('/publish-all', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => {
+    const { session, term, class: className, arm } = req.body;
+
+    // Validation
+    if (!session || !term || !className) {
+        return res.status(400).json({
+            success: false,
+            message: 'Missing required fields: session, term, and class are required.'
+        });
+    }
+
+    const connection = await pool.getConnection();
+    try {
+        await connection.beginTransaction();
+
+        // Get staff info for authorization
+        const staffInfo = await getStaffInfo(req.user.id);
+        if (!staffInfo && req.user.roles.includes('Admin')) {
+            await connection.rollback();
+            return res.status(403).json({ success: false, message: 'Staff record not found.' });
+        }
+
+        // Find the term by name and session
+        const [terms] = await connection.query(
+            'SELECT id, branch_id FROM terms WHERE name = ? AND session = ?',
+            [term, session]
+        );
+
+        if (terms.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({
+                success: false,
+                message: `Term "${term}" with session "${session}" not found.`
+            });
+        }
+
+        const term_id = terms[0].id;
+        const term_branch_id = terms[0].branch_id;
+
+        // Find the class by name (and optionally arm)
+        let classQuery = 'SELECT id, branch_id FROM classes WHERE name = ?';
+        const classParams = [className];
+
+        if (arm) {
+            classQuery += ' AND arm = ?';
+            classParams.push(arm);
+        }
+
+        const [classes] = await connection.query(classQuery, classParams);
+
+        if (classes.length === 0) {
+            await connection.rollback();
+            const armMsg = arm ? ` with arm "${arm}"` : '';
+            return res.status(404).json({
+                success: false,
+                message: `Class "${className}"${armMsg} not found.`
+            });
+        }
+
+        const class_id = classes[0].id;
+        const class_branch_id = classes[0].branch_id;
+
+        // Authorization check for Admin
+        if (req.user.roles.includes('Admin') && !req.user.roles.includes('SuperAdmin')) {
+            if (staffInfo.branch_id !== class_branch_id) {
+                await connection.rollback();
+                return res.status(403).json({
+                    success: false,
+                    message: 'Admins can only publish results for their own branch.'
+                });
+            }
+        }
+
+        // Update all unpublished results for this class and term
+        const [updateResult] = await connection.query(
+            `UPDATE student_results 
+             SET published = TRUE, published_by = ?, published_at = NOW() 
+             WHERE class_id = ? AND term_id = ? AND published = FALSE`,
+            [req.user.id, class_id, term_id]
+        );
+
+        await connection.commit();
+
+        res.status(200).json({
+            success: true,
+            message: 'Results published successfully.',
+            data: {
+                published_count: updateResult.affectedRows,
+                session,
+                term,
+                class: className,
+                arm: arm || null
+            }
+        });
+
+    } catch (err) {
+        await connection.rollback();
+        console.error('Error publishing results:', err);
+        res.status(500).json({ success: false, message: 'Server error while publishing results.' });
+    } finally {
+        connection.release();
+    }
+});
+
+// GET /api/results - Get results with optional filters (session, term, class, arm)
+router.get('/', [auth, authorize(['Admin', 'SuperAdmin', 'Teacher'])], async (req, res) => {
+    const { session, term, class: className, arm, published_only } = req.query;
+
+    try {
+        // Build the query dynamically based on filters
+        let query = `
+            SELECT 
+                sr.id,
+                sr.student_id,
+                s.first_name,
+                s.last_name,
+                c.name as class_name,
+                c.arm as class_arm,
+                cs.name as subject_name,
+                t.name as term_name,
+                t.session,
+                sr.assessment_type,
+                sr.score,
+                sr.published,
+                sr.published_at,
+                sr.created_at,
+                sr.updated_at,
+                st.name as teacher_name,
+                pub_user.email as published_by_email
+            FROM student_results sr
+            LEFT JOIN students s ON sr.student_id = s.id
+            LEFT JOIN classes c ON sr.class_id = c.id
+            LEFT JOIN class_subjects cs ON sr.subject_id = cs.id
+            LEFT JOIN terms t ON sr.term_id = t.id
+            LEFT JOIN staff st ON sr.teacher_id = st.id
+            LEFT JOIN users pub_user ON sr.published_by = pub_user.id
+            WHERE 1=1
+        `;
+
+        const queryParams = [];
+
+        // Get staff info for authorization
+        const staffInfo = await getStaffInfo(req.user.id);
+        if (!staffInfo) {
+            return res.status(403).json({ success: false, message: 'Staff record not found.' });
+        }
+
+        // Authorization: Admin can only see their branch
+        if (req.user.roles.includes('Admin') && !req.user.roles.includes('SuperAdmin')) {
+            query += ' AND sr.branch_id = ?';
+            queryParams.push(staffInfo.branch_id);
+        }
+
+        // Authorization: Teacher can only see their subjects
+        if (req.user.roles.includes('Teacher') && !req.user.roles.includes('Admin') && !req.user.roles.includes('SuperAdmin')) {
+            query += ' AND cs.teacher_id = ?';
+            queryParams.push(staffInfo.id);
+        }
+
+        // Apply filters
+        if (session) {
+            query += ' AND t.session = ?';
+            queryParams.push(session);
+        }
+
+        if (term) {
+            query += ' AND t.name = ?';
+            queryParams.push(term);
+        }
+
+        if (className) {
+            query += ' AND c.name = ?';
+            queryParams.push(className);
+        }
+
+        if (arm) {
+            query += ' AND c.arm = ?';
+            queryParams.push(arm);
+        }
+
+        if (published_only === 'true') {
+            query += ' AND sr.published = TRUE';
+        }
+
+        query += ' ORDER BY s.last_name ASC, s.first_name ASC, cs.name ASC, sr.assessment_type ASC';
+
+        const [results] = await pool.query(query, queryParams);
+
+        res.json({
+            success: true,
+            count: results.length,
+            filters: {
+                session: session || null,
+                term: term || null,
+                class: className || null,
+                arm: arm || null,
+                published_only: published_only === 'true'
+            },
+            data: results
+        });
+
+    } catch (err) {
+        console.error('Error fetching results:', err);
+        res.status(500).json({ success: false, message: 'Server error while fetching results.' });
+    }
+});
+
+module.exports = router;
+

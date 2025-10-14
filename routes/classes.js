@@ -1,12 +1,12 @@
 const express = require('express');
 const router = express.Router();
-const { pool } = require('../database');const { v4: uuidv4 } = require('uuid');
+const { pool } = require('../database'); const { v4: uuidv4 } = require('uuid');
 const auth = require('../middleware/auth');
 const authorize = require('../middleware/authorize');
 
 // Create a new class
 router.post('/', auth, authorize(['SuperAdmin', 'Admin']), async (req, res) => {
-    const { name, branch_id, teacher_id, total_student } = req.body;
+    const { name, arm, branch_id, teacher_id, total_student } = req.body;
 
     if (!name || !branch_id || !teacher_id) {
         return res.status(400).json({ success: false, message: 'Please provide name, branch_id, and teacher_id.' });
@@ -48,6 +48,7 @@ router.post('/', auth, authorize(['SuperAdmin', 'Admin']), async (req, res) => {
         const newClass = {
             id: uuidv4(),
             name,
+            arm: arm || null,
             branch_id,
             teacher_id,
             total_student: totalStudentValue
@@ -83,6 +84,7 @@ router.get('/', async (req, res) => {
             SELECT 
                 c.id,
                 c.name,
+                c.arm,
                 c.total_student,
                 c.branch_id,
                 b.school_name as branch_name,
@@ -105,7 +107,7 @@ router.get('/', async (req, res) => {
 // Update an existing class
 router.put('/:id', auth, authorize(['SuperAdmin', 'Admin']), async (req, res) => {
     const classId = req.params.id;
-    const { name, teacher_id, total_student } = req.body;
+    const { name, arm, teacher_id, total_student } = req.body;
     const connection = await pool.getConnection();
 
     try {
@@ -129,6 +131,7 @@ router.put('/:id', auth, authorize(['SuperAdmin', 'Admin']), async (req, res) =>
 
         const updateFields = {};
         if (name) updateFields.name = name;
+        if (arm !== undefined) updateFields.arm = arm;
         if (total_student !== undefined) {
             const totalStudentValue = parseInt(total_student, 10);
             if (isNaN(totalStudentValue) || totalStudentValue < 0) {
@@ -155,7 +158,7 @@ router.put('/:id', auth, authorize(['SuperAdmin', 'Admin']), async (req, res) =>
         await connection.commit();
 
         const [updatedClass] = await connection.query(`
-            SELECT c.id, c.name, c.total_student, c.branch_id, b.school_name as branch_name, c.teacher_id, s.name as teacher_name
+            SELECT c.id, c.name, c.arm, c.total_student, c.branch_id, b.school_name as branch_name, c.teacher_id, s.name as teacher_name
             FROM classes c
             JOIN branches b ON c.branch_id = b.id
             JOIN staff s ON c.teacher_id = s.id
