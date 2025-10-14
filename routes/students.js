@@ -66,7 +66,8 @@ router.post('/create', [auth, authorize(['Admin', 'SuperAdmin', 'Teacher'])], as
         parent_email, parent_phone, parent_name,
 
         surname_name, other_names, gender, place_of_birth, lga, tribe,
-        blood_group, genotype, allergies
+        blood_group, genotype, allergies, previous_class, last_term_result,
+        birth_certificate, medical_report
     } = req.body;
     // Map optional surname/other_names from frontend to required first_name/last_name
     const normalizedFirstName = first_name || other_names;
@@ -182,7 +183,11 @@ router.post('/create', [auth, authorize(['Admin', 'SuperAdmin', 'Teacher'])], as
                 disability: disability || null,
                 blood_group: blood_group || null,
                 genotype: genotype || null,
-                allergies: allergies || null
+                allergies: allergies || null,
+                previous_class: previous_class || null,
+                last_term_result: last_term_result || null,
+                birth_certificate: birth_certificate || null,
+                medical_report: medical_report || null
             };
             await connection.query('INSERT INTO students SET ?', studentData);
 
@@ -402,7 +407,8 @@ router.get('/', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => 
     try {
         let query = `
             SELECT s.id, s.first_name, s.last_name, s.dob, s.address, s.nationality, s.state, s.religion, s.disability, s.passport, c.name AS class_name, b.school_name AS branch,
-                   p.name AS parent_name, p.email AS parent_email, p.phone AS parent_phone
+                   p.name AS parent_name, p.email AS parent_email, p.phone AS parent_phone,
+                   s.previous_class, s.last_term_result, s.birth_certificate, s.medical_report
             FROM students s
             JOIN classes c ON s.class_id = c.id
             JOIN branches b ON s.branch_id = b.id
@@ -570,6 +576,7 @@ router.get('/class/:class_id', [auth, authorize(['Teacher', 'Admin', 'SuperAdmin
                 s.id, s.user_id, s.first_name, s.last_name, s.surname_name, s.other_names,
                 s.gender, s.dob, s.address, s.nationality, s.state, s.religion, 
                 s.disability, s.passport, s.blood_group, s.genotype, s.allergies,
+                s.previous_class, s.last_term_result, s.birth_certificate, s.medical_report,
                 p.name AS parent_name, p.email AS parent_email, p.phone AS parent_phone,
                 c.name AS class_name, b.school_name AS branch_name
             FROM students s
@@ -619,7 +626,8 @@ router.get('/class', [auth, authorize(['Teacher'])], async (req, res) => {
         // Fetch students in that class
         const query = `
             SELECT s.id, s.first_name, s.last_name, s.dob, s.address, s.nationality, s.state, s.religion, s.disability, s.passport,
-                   p.name AS parent_name, p.email AS parent_email, p.phone AS parent_phone
+                   p.name AS parent_name, p.email AS parent_email, p.phone AS parent_phone,
+                   s.previous_class, s.last_term_result, s.birth_certificate, s.medical_report
             FROM students s
             JOIN parents p ON s.parent_id = p.id
             WHERE s.class_id = ?
