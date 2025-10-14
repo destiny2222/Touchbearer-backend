@@ -6,7 +6,7 @@ const { pool } = require('../database');
 const auth = require('../middleware/auth');
 const authorize = require('../middleware/authorize');
 
-// GET /api/analytics/summary - Get aggregated data for all dashboard charts
+// GET /api/analytics/summary - Get aggregated data for the main analysis dashboard page
 router.get('/summary', [auth, authorize(['SuperAdmin', 'Admin'])], async (req, res) => {
     let connection;
     try {
@@ -22,43 +22,60 @@ router.get('/summary', [auth, authorize(['SuperAdmin', 'Admin'])], async (req, r
             if (staff.length > 0 && staff[0].branch_id) {
                 adminBranchId = staff[0].branch_id;
             } else {
-                // If an admin is not linked to a branch, return empty data to prevent errors
-                return res.json({ success: true, data: { balanceAnalytics: { revenue: [], expenses: [] }, revenueSource: [], population: {}, recentExpenses: [] } });
+                // If an admin is not linked to a branch, return empty data
+                return res.json({
+                    success: true,
+                    data: {
+                        attendanceAnalytics: { present: [], absent: [] },
+                        revenueSource: [],
+                        population: {},
+                        recentExpenses: []
+                    }
+                });
             }
         }
 
-        // --- 1. Balance Analytics (Revenue vs Expenses over last 90 days) ---
-        let revenueQuery = `
-            SELECT DATE(r.paid_at) as date, SUM(r.amount) as total
-            FROM revenue r
-            WHERE r.paid_at >= ?
+        // --- 1. Teacher Attendance (Last 90 days) ---
+        let attendanceQuery = `
+            SELECT
+                DATE(date) as date,
+                status,
+                COUNT(*) as count
+            FROM staff_attendance
+            WHERE date >= ?
         `;
-        const revenueParams = [ninetyDaysAgo];
+        const attendanceParams = [ninetyDaysAgo];
 
         if (adminBranchId) {
-            revenueQuery += ' AND r.student_id IN (SELECT id FROM students WHERE branch_id = ?)';
-            revenueParams.push(adminBranchId);
+            attendanceQuery += ' AND branch_id = ?';
+            attendanceParams.push(adminBranchId);
         }
-        revenueQuery += ' GROUP BY DATE(r.paid_at) ORDER BY date;';
-        const [revenueByDay] = await connection.query(revenueQuery, revenueParams);
+        attendanceQuery += ' GROUP BY DATE(date), status ORDER BY date;';
 
-        let expensesQuery = `
-            SELECT DATE(created_at) as date, SUM(cost) as total
-            FROM expenses
-            WHERE created_at >= ?
-        `;
-        const expenseParams = [ninetyDaysAgo];
+        const [attendanceResults] = await connection.query(attendanceQuery, attendanceParams);
 
-        if (adminBranchId) {
-            expensesQuery += ' AND branch_id = ?';
-            expenseParams.push(adminBranchId);
-        }
-        expensesQuery += ' GROUP BY DATE(created_at) ORDER BY date;';
-        const [expensesByDay] = await connection.query(expensesQuery, expenseParams);
+        // Process results into the format expected by the frontend
+        const attendanceAnalytics = {
+            present: [],
+            absent: []
+        };
 
+        attendanceResults.forEach(row => {
+            const dataPoint = { date: row.date, count: parseInt(row.count) };
+            if (row.status === 'Present') {
+                attendanceAnalytics.present.push(dataPoint);
+            } else if (row.status === 'Absent' || row.status === 'Leave') {
+                // Combine Absent and Leave counts for the 'Absent' line on the chart
+                const existingEntry = attendanceAnalytics.absent.find(d => d.date.getTime() === row.date.getTime());
+                if (existingEntry) {
+                    existingEntry.count += dataPoint.count;
+                } else {
+                    attendanceAnalytics.absent.push(dataPoint);
+                }
+            }
+        });
 
         // --- 2. Revenue Source ---
-        // FIX: Added branch filtering for Admins
         let revenueSourceQuery = `
             SELECT r.payment_for, SUM(r.amount) as total
             FROM revenue r
@@ -98,10 +115,7 @@ router.get('/summary', [auth, authorize(['SuperAdmin', 'Admin'])], async (req, r
         res.json({
             success: true,
             data: {
-                balanceAnalytics: {
-                    revenue: revenueByDay,
-                    expenses: expensesByDay
-                },
+                attendanceAnalytics,
                 revenueSource,
                 population: {
                     students: studentCount,
@@ -119,6 +133,7 @@ router.get('/summary', [auth, authorize(['SuperAdmin', 'Admin'])], async (req, r
         if (connection) connection.release();
     }
 });
+
 
 // @route   GET /api/analytics/performance
 // @desc    Get aggregated data for the performance page charts
@@ -194,7 +209,6 @@ router.get('/performance', [auth, authorize(['SuperAdmin', 'Admin'])], async (re
 
 
         // 3. Academics Data
-        // FIX: Changed exam_type check from 'Exam'/'Test' to 'Internal'/'External' to match DB schema
         const academicsBranchFilter = adminBranchId ? 'AND e.branch_id = ?' : '';
         const academicsParams = adminBranchId ? [startDate, endDate, adminBranchId] : [startDate, endDate];
         const academicsQuery = `
@@ -272,30 +286,26 @@ router.get('/analysis-page', [auth, authorize(['SuperAdmin', 'Admin'])], async (
         }
         const activeTermId = activeTerm[0].id;
 
-        // --- CRASH FIX: Moved fee calculations to the top ---
         const [[{ totalFeesDue }]] = await connection.query(`
             SELECT COALESCE(SUM(f.amount), 0) as totalFeesDue FROM fees f
-            WHERE f.term_id = ? ${simpleBranchFilter}
+            WHERE f.term_id = ? ${simpleBranchFilter.replace('WHERE', 'AND')}
         `, [activeTermId, ...branchParams]);
+
         const [[{ totalFeesPaid }]] = await connection.query(`
             SELECT COALESCE(SUM(p.amount_paid), 0) as totalFeesPaid
             FROM payments p
             LEFT JOIN students s ON p.student_id = s.id
-            WHERE p.term_id = ? ${studentBranchFilter}
+            WHERE p.term_id = ? ${studentBranchFilter.replace('WHERE', 'AND')}
         `, [activeTermId, ...branchParams]);
 
-        const feesPaidPercentage = totalFeesDue > 0 ? (totalFeesPaid / totalFeesDue) * 100 : 100; // Show 100% if no fees are due
+        const feesPaidPercentage = totalFeesDue > 0 ? (totalFeesPaid / totalFeesDue) * 100 : 100;
         const feesOwingPercentage = 100 - feesPaidPercentage;
 
-        // This can now be safely created
         const feesData = [
             { name: "Paid", value: Math.round(feesPaidPercentage), color: "#10b981" },
             { name: "Owing", value: Math.round(feesOwingPercentage), color: "#ef4444" }
         ];
-        // --- END CRASH FIX ---
 
-
-        // 1. Gross Revenue by Branch
         const grossRevenueQuery = `
             SELECT b.school_name as name, COALESCE(SUM(r.amount), 0) as value
             FROM branches b
@@ -306,7 +316,6 @@ router.get('/analysis-page', [auth, authorize(['SuperAdmin', 'Admin'])], async (
         `;
         const [grossRevenueData] = await connection.query(grossRevenueQuery, branchParams);
 
-        // 2. Revenue Source
         const totalRevenueSubquery = `
             SELECT COALESCE(SUM(rev.amount), 1) as total_sum
             FROM revenue rev
@@ -322,7 +331,6 @@ router.get('/analysis-page', [auth, authorize(['SuperAdmin', 'Admin'])], async (
         `;
         const [revenueSourceData] = await connection.query(revenueSourceQuery, adminBranchId ? [adminBranchId, adminBranchId] : []);
 
-        // 3. Monthly Revenue Trend (last 12 months)
         const monthlyRevenueQuery = `
             SELECT DATE_FORMAT(r.paid_at, '%b') as month, COALESCE(SUM(r.amount), 0) as revenue
             FROM revenue r
@@ -333,7 +341,6 @@ router.get('/analysis-page', [auth, authorize(['SuperAdmin', 'Admin'])], async (
         `;
         const [monthlyRevenueData] = await connection.query(monthlyRevenueQuery, branchParams);
 
-        // 4. School Population by Branch
         const schoolPopulationQuery = `
             SELECT b.school_name as school, COUNT(DISTINCT s.id) as students, COUNT(DISTINCT p.id) as parents, COUNT(DISTINCT ns.id) as newStudents
             FROM branches b
@@ -345,7 +352,6 @@ router.get('/analysis-page', [auth, authorize(['SuperAdmin', 'Admin'])], async (
         `;
         const [schoolPopulationData] = await connection.query(schoolPopulationQuery, branchParams);
 
-        // 5. Summary Cards Data
         const [[{ totalRevenue }]] = await connection.query(`
             SELECT COALESCE(SUM(r.amount), 0) as totalRevenue FROM revenue r LEFT JOIN students s ON r.student_id = s.id ${studentBranchFilter}`,
             branchParams
