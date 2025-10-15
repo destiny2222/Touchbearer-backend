@@ -342,11 +342,13 @@ async function initializeDatabase() {
                 id VARCHAR(36) PRIMARY KEY,
                 title VARCHAR(255) NOT NULL,
                 exam_type ENUM('Internal', 'External') NOT NULL,
+                assessment_type ENUM('ca1', 'ca2', 'ca3', 'exam') NOT NULL,
                 subject_type ENUM('Multi-Subject', 'Single-Subject') NOT NULL,
+                class_subject_id VARCHAR(36),
                 class_id VARCHAR(36),
                 branch_id VARCHAR(36) NOT NULL,
                 exam_date_time DATETIME NOT NULL,
-                duration_hours DECIMAL(4, 2) NOT NULL,
+                duration_minutes INT NOT NULL,
                 created_by VARCHAR(36) NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -938,6 +940,35 @@ async function initializeDatabase() {
         }
         await connection.query(createExamsTable);
         console.log("Exams table created");
+
+        // Add/update columns in the exams table
+        try {
+            const [examColumns] = await connection.query(`
+                SELECT COLUMN_NAME 
+                FROM INFORMATION_SCHEMA.COLUMNS 
+                WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'exams'
+            `, [dbName]);
+
+            const existingExamCols = examColumns.map(row => row.COLUMN_NAME);
+
+            if (!existingExamCols.includes('class_subject_id')) {
+                await connection.query('ALTER TABLE exams ADD COLUMN class_subject_id VARCHAR(36) AFTER subject_type');
+                console.log("Added 'class_subject_id' column to exams table");
+            }
+            if (!existingExamCols.includes('assessment_type')) {
+                await connection.query("ALTER TABLE exams ADD COLUMN assessment_type ENUM('ca1', 'ca2', 'ca3', 'exam') NOT NULL AFTER exam_type");
+                console.log("Added 'assessment_type' column to exams table");
+            }
+            if (existingExamCols.includes('duration_hours')) {
+                await connection.query('ALTER TABLE exams CHANGE COLUMN duration_hours duration_minutes INT NOT NULL');
+                console.log("Changed 'duration_hours' to 'duration_minutes' in exams table");
+            } else if (!existingExamCols.includes('duration_minutes')) {
+                await connection.query('ALTER TABLE exams ADD COLUMN duration_minutes INT NOT NULL AFTER exam_date_time');
+                console.log("Added 'duration_minutes' column to exams table");
+            }
+        } catch (error) {
+            console.log("Error updating exams table:", error.message);
+        }
         await connection.query(createSubjectsTable);
         console.log("Subjects table created");
         await connection.query(createQuestionsTable);
@@ -1002,6 +1033,24 @@ async function initializeDatabase() {
         console.log("Revenue table created");
         await connection.query(createStudentResultsTable);
         console.log("Student results table created");
+
+        // Add exam_id to student_results if it doesn't exist
+        try {
+            const [resultColumns] = await connection.query(`
+                SELECT COLUMN_NAME 
+                FROM INFORMATION_SCHEMA.COLUMNS 
+                WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'student_results'
+            `, [dbName]);
+
+            const existingResultCols = resultColumns.map(row => row.COLUMN_NAME);
+
+            if (!existingResultCols.includes('exam_id')) {
+                await connection.query('ALTER TABLE student_results ADD COLUMN exam_id VARCHAR(36) NULL AFTER branch_id');
+                console.log("Added 'exam_id' column to student_results table");
+            }
+        } catch (error) {
+            console.log("Error updating student_results table:", error.message);
+        }
 
         // Add published fields to student_results if they don't exist
         try {

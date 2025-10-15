@@ -22,7 +22,7 @@ async function canTeacherManageSubject(teacherStaffId, subjectId) {
 
 // POST /api/results/save - Save or update student results (Upsert)
 router.post('/save', [auth, authorize(['Teacher', 'Admin', 'SuperAdmin'])], async (req, res) => {
-    const { class_id, subject_id, assessment_type, scores } = req.body;
+    const { class_id, subject_id, assessment_type, exam_id, scores } = req.body;
 
     // Validation
     if (!class_id || !subject_id || !assessment_type || !scores || !Array.isArray(scores)) {
@@ -174,16 +174,16 @@ router.post('/save', [auth, authorize(['Teacher', 'Admin', 'SuperAdmin'])], asyn
             if (existing.length > 0) {
                 // Update existing record
                 await connection.query(
-                    'UPDATE student_results SET score = ?, teacher_id = ?, updated_at = NOW() WHERE id = ?',
-                    [score, staffInfo.id, existing[0].id]
+                    'UPDATE student_results SET score = ?, teacher_id = ?, exam_id = ?, updated_at = NOW() WHERE id = ?',
+                    [score, staffInfo.id, exam_id || null, existing[0].id]
                 );
                 updatedCount++;
             } else {
                 // Insert new record
                 const resultId = uuidv4();
                 await connection.query(
-                    'INSERT INTO student_results (id, student_id, class_id, subject_id, term_id, assessment_type, score, teacher_id, branch_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                    [resultId, student_id, class_id, subject_id, term_id, assessment_type, score, staffInfo.id, branch_id]
+                    'INSERT INTO student_results (id, student_id, class_id, subject_id, term_id, assessment_type, score, teacher_id, branch_id, exam_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                    [resultId, student_id, class_id, subject_id, term_id, assessment_type, score, staffInfo.id, branch_id, exam_id || null]
                 );
                 insertedCount++;
             }
@@ -265,6 +265,7 @@ router.get('/class/:class_id/subject/:subject_id', [auth, authorize(['Teacher', 
         let query = `
             SELECT 
                 sr.id,
+                sr.exam_id,
                 sr.student_id,
                 s.first_name,
                 s.last_name,
@@ -371,6 +372,7 @@ router.get('/student/:student_id', [auth, authorize(['Teacher', 'Admin', 'SuperA
         const query = `
             SELECT 
                 sr.id,
+                sr.exam_id,
                 sr.assessment_type,
                 sr.score,
                 cs.name as subject_name,
@@ -662,4 +664,3 @@ router.get('/', [auth, authorize(['Admin', 'SuperAdmin', 'Teacher'])], async (re
 });
 
 module.exports = router;
-

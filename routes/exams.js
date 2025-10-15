@@ -17,17 +17,23 @@ function getOrdinal(n) {
 router.post('/store', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => {
     const {
         examType,
+        assessment_type,
         subjectType,
+        class_subject_id,
         title,
-        prospectiveClass,
+        class_id,
         dateTime,
-        duration,
+        duration_minutes,
         subjects
     } = req.body;
 
     // Basic validation
-    if (!examType || !subjectType || !title || !prospectiveClass || !dateTime || !duration || !subjects) {
+    if (!examType || !assessment_type || !subjectType || !title || !class_id || !dateTime || !duration_minutes || !subjects) {
         return res.status(400).json({ success: false, message: 'Please provide all required fields.' });
+    }
+
+    if (subjectType === 'single' && !class_subject_id) {
+        return res.status(400).json({ success: false, message: 'Please provide class_subject_id for single subject exams.' });
     }
 
     const connection = await pool.getConnection();
@@ -41,22 +47,33 @@ router.post('/store', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, re
         }
         const branch_id = adminStaff[0].branch_id;
 
-        const [classInfo] = await connection.query('SELECT id FROM classes WHERE name = ? AND branch_id = ?', [prospectiveClass, branch_id]);
+        const [classInfo] = await connection.query('SELECT id FROM classes WHERE id = ? AND branch_id = ?', [class_id, branch_id]);
         if (classInfo.length === 0) {
             await connection.rollback();
             return res.status(400).json({ success: false, message: 'Class not found for the given branch.' });
         }
-        const class_id = classInfo[0].id;
+
+        if (class_subject_id) {
+            const [subjectCheck] = await connection.query('SELECT class_id FROM class_subjects WHERE id = ?', [class_subject_id]);
+            if (subjectCheck.length === 0) {
+                await connection.rollback();
+                return res.status(400).json({ success: false, message: 'class_subject_id is invalid.' });
+            }
+            if (subjectCheck[0].class_id !== class_id) {
+                await connection.rollback();
+                return res.status(400).json({ success: false, message: 'Subject does not belong to the prospective class.' });
+            }
+        }
 
         // Check for scheduling conflicts
         const newExamStartTime = new Date(dateTime);
-        const newExamEndTime = new Date(newExamStartTime.getTime() + duration * 60 * 60 * 1000);
+        const newExamEndTime = new Date(newExamStartTime.getTime() + duration_minutes * 60 * 1000);
 
-        const [existingExams] = await connection.query('SELECT exam_date_time, duration_hours FROM exams WHERE class_id = ?', [class_id]);
+        const [existingExams] = await connection.query('SELECT exam_date_time, duration_minutes FROM exams WHERE class_id = ?', [class_id]);
 
         for (const existingExam of existingExams) {
             const existingExamStartTime = new Date(existingExam.exam_date_time);
-            const existingExamEndTime = new Date(existingExamStartTime.getTime() + existingExam.duration_hours * 60 * 60 * 1000);
+            const existingExamEndTime = new Date(existingExamStartTime.getTime() + existingExam.duration_minutes * 60 * 1000);
 
             // Check if the time ranges overlap. Exams can be scheduled back-to-back.
             if (newExamStartTime < existingExamEndTime && newExamEndTime > existingExamStartTime) {
@@ -72,11 +89,13 @@ router.post('/store', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, re
             id: uuidv4(),
             title,
             exam_type: examType,
+            assessment_type,
             subject_type: subjectType,
+            class_subject_id: subjectType === 'single' ? class_subject_id : null,
             class_id,
             branch_id,
             exam_date_time: dateTime,
-            duration_hours: duration,
+            duration_minutes,
             created_by: req.user.id
         };
 
@@ -129,7 +148,7 @@ router.get('/', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => 
                 e.subject_type,
                 e.exam_date_time,
                 b.school_name as branch,
-                e.duration_hours as exam_duration
+                e.duration_minutes as exam_duration
             FROM exams e
             JOIN classes c ON e.class_id = c.id
             JOIN branches b ON e.branch_id = b.id
@@ -163,10 +182,10 @@ router.get('/', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => 
 // @access  Admin, SuperAdmin
 router.put('/:examId', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => {
     const { examId } = req.params;
-    const { title, examType, dateTime, duration } = req.body;
+    const { title, examType, dateTime, duration_minutes } = req.body;
 
     // Basic validation
-    if (!title || !examType || !dateTime || !duration) {
+    if (!title || !examType || !dateTime || !duration_minutes) {
         return res.status(400).json({ success: false, message: 'Please provide all required fields for update.' });
     }
 
@@ -190,12 +209,12 @@ router.put('/:examId', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, r
 
         // Check for scheduling conflicts
         const newExamStartTime = new Date(dateTime);
-        const newExamEndTime = new Date(newExamStartTime.getTime() + duration * 60 * 60 * 1000);
-        const [existingExams] = await connection.query('SELECT exam_date_time, duration_hours FROM exams WHERE class_id = ? AND id != ?', [exam[0].class_id, examId]);
+        const newExamEndTime = new Date(newExamStartTime.getTime() + duration_minutes * 60 * 1000);
+        const [existingExams] = await connection.query('SELECT exam_date_time, duration_minutes FROM exams WHERE class_id = ? AND id != ?', [exam[0].class_id, examId]);
 
         for (const existingExam of existingExams) {
             const existingExamStartTime = new Date(existingExam.exam_date_time);
-            const existingExamEndTime = new Date(existingExamStartTime.getTime() + existingExam.duration_hours * 60 * 60 * 1000);
+            const existingExamEndTime = new Date(existingExamStartTime.getTime() + existingExam.duration_minutes * 60 * 1000);
 
             // Check if the time ranges overlap. Exams can be scheduled back-to-back.
             if (newExamStartTime < existingExamEndTime && newExamEndTime > existingExamStartTime) {
@@ -211,7 +230,7 @@ router.put('/:examId', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, r
             title,
             exam_type: examType,
             exam_date_time: dateTime,
-            duration_hours: duration
+            duration_minutes
         };
 
         await connection.query('UPDATE exams SET ? WHERE id = ?', [updatedExam, examId]);
@@ -451,14 +470,14 @@ router.get('/subjects', [auth, authorize(['Student', 'NewStudent'])], async (req
             return res.status(404).json({ success: false, message: "Student class not found." });
         }
 
-        const [exam] = await pool.query('SELECT id, duration_hours FROM exams WHERE class_id = ? AND exam_type = ? AND exam_date_time > NOW() ORDER BY exam_date_time ASC LIMIT 1', [studentClassId, examTypeFilter]);
+        const [exam] = await pool.query('SELECT id, duration_minutes FROM exams WHERE class_id = ? AND exam_type = ? AND exam_date_time > NOW() ORDER BY exam_date_time ASC LIMIT 1', [studentClassId, examTypeFilter]);
 
         if (exam.length === 0) {
             return res.status(404).json({ success: false, message: "No upcoming exams found for your class." });
         }
 
         const examId = exam[0].id;
-        const examDuration = exam[0].duration_hours;
+        const examDuration = exam[0].duration_minutes;
 
         const [subjects] = await pool.query('SELECT id, title FROM subjects WHERE exam_id = ?', [examId]);
 
@@ -488,7 +507,7 @@ router.get('/subjects/:subjectId/questions', [auth, authorize(['Student', 'NewSt
             return res.status(404).json({ success: false, message: 'Subject not found.' });
         }
 
-        const [exams] = await pool.query('SELECT exam_date_time, duration_hours FROM exams WHERE id = ?', [subjects[0].exam_id]);
+        const [exams] = await pool.query('SELECT exam_date_time, duration_minutes FROM exams WHERE id = ?', [subjects[0].exam_id]);
         if (exams.length === 0) {
             return res.status(404).json({ success: false, message: 'Exam not found for this subject.' });
         }
@@ -500,7 +519,7 @@ router.get('/subjects/:subjectId/questions', [auth, authorize(['Student', 'NewSt
         const allowedStartTime = new Date(examDateTime.getTime() - 30 * 60 * 1000);
 
         // Exam ends after its duration
-        const examEndTime = new Date(examDateTime.getTime() + exams[0].duration_hours * 60 * 60 * 1000);
+        const examEndTime = new Date(examDateTime.getTime() + exams[0].duration_minutes * 60 * 1000);
 
         if (now < allowedStartTime) {
             return res.status(403).json({ success: false, message: 'It is not yet time for the exam.' });
@@ -510,9 +529,25 @@ router.get('/subjects/:subjectId/questions', [auth, authorize(['Student', 'NewSt
             return res.status(403).json({ success: false, message: 'The time for this exam has passed.' });
         }
 
-        const [questions] = await pool.query('SELECT id, question_text as text, options FROM questions WHERE subject_id = ?', [req.params.subjectId]);
+        const [questionsFromDb] = await pool.query('SELECT id, question_text as text, options FROM questions WHERE subject_id = ?', [req.params.subjectId]);
+
+        // Shuffle options for each question
+        const questions = questionsFromDb.map(q => {
+            const options = JSON.parse(q.options);
+            // Fisher-Yates shuffle algorithm
+            for (let i = options.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [options[i], options[j]] = [options[j], options[i]];
+            }
+            return {
+                id: q.id,
+                text: q.text,
+                options: options
+            };
+        });
+
         res.json({ success: true, data: questions });
-        console.log('Questions fetched successfully.');
+        console.log('Questions fetched successfully with shuffled options.');
     } catch (err) {
         console.error(err);
         res.status(500).json({ success: false, message: 'Server Error' });
@@ -524,7 +559,7 @@ router.get('/subjects/:subjectId/questions', [auth, authorize(['Student', 'NewSt
 // @desc    Submit answers and calculate score
 // @access  Student, NewStudent
 router.post('/answers', [auth, authorize(['Student', 'NewStudent'])], async (req, res) => {
-    const { examId, answers } = req.body; // answers: [{ questionId: string, selectedOptionIndex: int }]
+    const { examId, answers } = req.body; // answers: [{ questionId: string, selectedOptionValue: string }]
     const userId = req.user.id;
 
     if (!examId || !answers || !Array.isArray(answers)) {
@@ -546,7 +581,7 @@ router.post('/answers', [auth, authorize(['Student', 'NewStudent'])], async (req
         // Check if exam is still active
         const now = new Date();
         const examDateTime = new Date(exam.exam_date_time);
-        const examEndTime = new Date(examDateTime.getTime() + exam.duration_hours * 60 * 60 * 1000);
+        const examEndTime = new Date(examDateTime.getTime() + exam.duration_minutes * 60 * 1000);
         if (now > examEndTime) {
             await connection.rollback();
             return res.status(403).json({ success: false, message: 'The time for this exam has passed. Submission is no longer accepted.' });
@@ -561,7 +596,7 @@ router.post('/answers', [auth, authorize(['Student', 'NewStudent'])], async (req
 
         // Fetch all questions for the exam to validate answers and calculate score
         const [allQuestions] = await connection.query(`
-            SELECT q.id, q.correct_answer_index 
+            SELECT q.id, q.options, q.correct_answer_index 
             FROM questions q
             JOIN subjects s ON q.subject_id = s.id
             WHERE s.exam_id = ?
@@ -573,16 +608,19 @@ router.post('/answers', [auth, authorize(['Student', 'NewStudent'])], async (req
         }
 
         const totalQuestions = allQuestions.length;
-        const questionMap = new Map(allQuestions.map(q => [q.id, q.correct_answer_index]));
+        const questionMap = new Map(allQuestions.map(q => {
+            const options = JSON.parse(q.options);
+            const correctAnswer = options[q.correct_answer_index];
+            return [q.id, correctAnswer];
+        }));
 
         let score = 0;
         for (const answer of answers) {
-            const questionId = answer.questionId;
-            const selectedOptionIndex = answer.selectedOptionIndex;
+            const { questionId, selectedOptionValue } = answer;
 
             if (questionMap.has(questionId)) {
-                // Use non-strict equality to guard against type mismatches (e.g., '1' vs 1)
-                if (questionMap.get(questionId) == selectedOptionIndex) {
+                // Compare the submitted answer value with the correct answer value
+                if (questionMap.get(questionId) === selectedOptionValue) {
                     score++;
                 }
             }
@@ -607,6 +645,35 @@ router.post('/answers', [auth, authorize(['Student', 'NewStudent'])], async (req
         };
 
         await connection.query('INSERT INTO exam_results SET ?', result);
+
+        // Sync with student_results if this is a single-subject exam
+        if (exam.class_subject_id) {
+            const [student] = await connection.query('SELECT id FROM students WHERE user_id = ?', [userId]);
+            if (student.length > 0) {
+                const studentId = student[0].id;
+                const [subject] = await connection.query('SELECT teacher_id FROM class_subjects WHERE id = ?', [exam.class_subject_id]);
+                const teacherId = subject.length > 0 ? subject[0].teacher_id : null;
+
+                const [existing] = await connection.query(
+                    'SELECT id FROM student_results WHERE student_id = ? AND subject_id = ? AND term_id = ? AND assessment_type = ?',
+                    [studentId, exam.class_subject_id, termId, exam.assessment_type]
+                );
+
+                if (existing.length > 0) {
+                    await connection.query(
+                        'UPDATE student_results SET score = ?, teacher_id = ?, exam_id = ?, updated_at = NOW() WHERE id = ?',
+                        [percentageScore, teacherId, examId, existing[0].id]
+                    );
+                } else {
+                    const resultId = uuidv4();
+                    await connection.query(
+                        'INSERT INTO student_results (id, student_id, class_id, subject_id, term_id, assessment_type, score, teacher_id, branch_id, exam_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+                        [resultId, studentId, exam.class_id, exam.class_subject_id, termId, exam.assessment_type, percentageScore, teacherId, exam.branch_id, examId]
+                    );
+                }
+            }
+        }
+
         await connection.commit();
 
         res.status(200).json({ success: true, message: 'Exam submitted successfully.' });

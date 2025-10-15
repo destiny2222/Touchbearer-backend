@@ -286,19 +286,24 @@ router.get('/analysis-page', [auth, authorize(['SuperAdmin', 'Admin'])], async (
         }
         const activeTermId = activeTerm[0].id;
 
-        const [[{ totalFeesDue }]] = await connection.query(`
-            SELECT COALESCE(SUM(f.amount), 0) as totalFeesDue FROM fees f
-            WHERE f.term_id = ? ${simpleBranchFilter.replace('WHERE', 'AND')}
+        const studentPaymentStatusBranchFilter = adminBranchId ? `AND s.branch_id = ?` : '';
+
+        const [[{ feesPaidCount }]] = await connection.query(`
+            SELECT COUNT(*) as feesPaidCount
+            FROM student_payment_statuses sps
+            LEFT JOIN students s ON sps.student_id = s.id
+            WHERE sps.term_id = ? AND sps.status = 'Paid' ${studentPaymentStatusBranchFilter}
         `, [activeTermId, ...branchParams]);
 
-        const [[{ totalFeesPaid }]] = await connection.query(`
-            SELECT COALESCE(SUM(p.amount_paid), 0) as totalFeesPaid
-            FROM payments p
-            LEFT JOIN students s ON p.student_id = s.id
-            WHERE p.term_id = ? ${studentBranchFilter.replace('WHERE', 'AND')}
+        const [[{ feesOwingCount }]] = await connection.query(`
+            SELECT COUNT(*) as feesOwingCount
+            FROM student_payment_statuses sps
+            LEFT JOIN students s ON sps.student_id = s.id
+            WHERE sps.term_id = ? AND sps.status = 'Not Paid' ${studentPaymentStatusBranchFilter}
         `, [activeTermId, ...branchParams]);
 
-        const feesPaidPercentage = totalFeesDue > 0 ? (totalFeesPaid / totalFeesDue) * 100 : 100;
+        const totalStudentsWithStatus = feesPaidCount + feesOwingCount;
+        const feesPaidPercentage = totalStudentsWithStatus > 0 ? (feesPaidCount / totalStudentsWithStatus) * 100 : 100;
         const feesOwingPercentage = 100 - feesPaidPercentage;
 
         const feesData = [
@@ -368,8 +373,8 @@ router.get('/analysis-page', [auth, authorize(['SuperAdmin', 'Admin'])], async (
             data: {
                 summaryCards: {
                     totalRevenue: parseFloat(totalRevenue).toFixed(2),
-                    feesPaid: Math.round(feesPaidPercentage),
-                    feesOwing: Math.round(feesOwingPercentage),
+                    feesPaid: feesPaidCount,
+                    feesOwing: feesOwingCount,
                     totalBranches: totalBranchesCount,
                     avgMonthlyRevenue: parseFloat(avgMonthlyRevenue).toFixed(2)
                 },
