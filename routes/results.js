@@ -210,11 +210,23 @@ router.post('/save', [auth, authorize(['Teacher', 'Admin', 'SuperAdmin'])], asyn
     }
 });
 
-// GET /api/results/class/:class_id/subject/:subject_id - Get results for a class and subject
-// Optional query param: assessment_type (ca1, ca2, ca3, exam)
+// GET /api/results/class/:class_id/subject/:subject_id - Get results for a class and subject, including students without scores
+// Requires query param: assessment_type (ca1, ca2, ca3, exam)
 router.get('/class/:class_id/subject/:subject_id', [auth, authorize(['Teacher', 'Admin', 'SuperAdmin'])], async (req, res) => {
     const { class_id, subject_id } = req.params;
-    const { assessment_type } = req.query; // Optional filter
+    const { assessment_type } = req.query;
+
+    if (!assessment_type) {
+        return res.status(400).json({ success: false, message: 'The assessment_type query parameter is required.' });
+    }
+
+    const validTypes = ['ca1', 'ca2', 'ca3', 'exam'];
+    if (!validTypes.includes(assessment_type)) {
+        return res.status(400).json({
+            success: false,
+            message: 'Invalid assessment_type. Must be one of: ca1, ca2, ca3, exam'
+        });
+    }
 
     try {
         // Verify class and subject exist
@@ -261,42 +273,29 @@ router.get('/class/:class_id/subject/:subject_id', [auth, authorize(['Teacher', 
         );
         const term_id = activeTerm.length > 0 ? activeTerm[0].id : null;
 
-        // Fetch results
-        let query = `
-            SELECT 
-                sr.id,
-                sr.exam_id,
-                sr.student_id,
-                s.first_name,
-                s.last_name,
-                sr.assessment_type,
-                sr.score,
-                sr.created_at,
-                sr.updated_at,
-                st.name as teacher_name
-            FROM student_results sr
-            LEFT JOIN students s ON sr.student_id = s.id
-            LEFT JOIN staff st ON sr.teacher_id = st.id
-            WHERE sr.class_id = ? AND sr.subject_id = ? AND sr.term_id = ?
-        `;
-
-        const queryParams = [class_id, subject_id, term_id];
-
-        // Optional filter by assessment_type
-        if (assessment_type) {
-            const validTypes = ['ca1', 'ca2', 'ca3', 'exam'];
-            if (!validTypes.includes(assessment_type)) {
-                return res.status(400).json({
-                    success: false,
-                    message: 'Invalid assessment_type. Must be one of: ca1, ca2, ca3, exam'
-                });
-            }
-            query += ' AND sr.assessment_type = ?';
-            queryParams.push(assessment_type);
+        if (!term_id) {
+            return res.status(404).json({ success: false, message: 'No active term found for this branch.' });
         }
 
-        query += ' ORDER BY s.last_name ASC, s.first_name ASC';
+        // Fetch all students in the class and LEFT JOIN their results for the specific assessment
+        const query = `
+            SELECT
+                s.id as student_id,
+                s.first_name,
+                s.last_name,
+                sr.score,
+                sr.id as result_id,
+                sr.exam_id
+            FROM students s
+            LEFT JOIN student_results sr ON s.id = sr.student_id
+                AND sr.subject_id = ?
+                AND sr.term_id = ?
+                AND sr.assessment_type = ?
+            WHERE s.class_id = ?
+            ORDER BY s.last_name ASC, s.first_name ASC;
+        `;
 
+        const queryParams = [subject_id, term_id, assessment_type, class_id];
         const [results] = await pool.query(query, queryParams);
 
         res.json({
@@ -562,7 +561,7 @@ router.post('/publish-all', [auth, authorize(['Admin', 'SuperAdmin'])], async (r
 
 // GET /api/results - Get results with optional filters (session, term, class, arm)
 router.get('/', [auth, authorize(['Admin', 'SuperAdmin', 'Teacher'])], async (req, res) => {
-    const { session, term, class: className, arm, published_only } = req.query;
+    const { session, term, class: className, arm, published_only, class_id, subject_id, assessment_type } = req.query;
 
     try {
         // Build the query dynamically based on filters
@@ -636,6 +635,21 @@ router.get('/', [auth, authorize(['Admin', 'SuperAdmin', 'Teacher'])], async (re
             queryParams.push(arm);
         }
 
+        if (class_id) {
+            query += ' AND sr.class_id = ?';
+            queryParams.push(class_id);
+        }
+
+        if (subject_id) {
+            query += ' AND sr.subject_id = ?';
+            queryParams.push(subject_id);
+        }
+
+        if (assessment_type) {
+            query += ' AND sr.assessment_type = ?';
+            queryParams.push(assessment_type);
+        }
+
         if (published_only === 'true') {
             query += ' AND sr.published = TRUE';
         }
@@ -652,7 +666,10 @@ router.get('/', [auth, authorize(['Admin', 'SuperAdmin', 'Teacher'])], async (re
                 term: term || null,
                 class: className || null,
                 arm: arm || null,
-                published_only: published_only === 'true'
+                published_only: published_only === 'true',
+                class_id: class_id || null,
+                subject_id: subject_id || null,
+                assessment_type: assessment_type || null
             },
             data: results
         });

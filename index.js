@@ -14,6 +14,7 @@ app.use('/api/event', require('./routes/event'));
 app.use('/api/branches', require('./routes/branches'));
 app.use('/api/expenses', require('./routes/expenses'));
 app.use('/api/staff', require('./routes/staff'));
+app.use('/api/teachers', require('./routes/teachers'));
 app.use('/api/classes', require('./routes/classes'));
 app.use('/api/subjects', require('./routes/subjects'));
 app.use('/api/results', require('./routes/results'));

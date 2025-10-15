@@ -358,23 +358,16 @@ async function initializeDatabase() {
             )
         `;
 
-        const createSubjectsTable = `
-            CREATE TABLE IF NOT EXISTS subjects (
-                id VARCHAR(36) PRIMARY KEY,
-                exam_id VARCHAR(36) NOT NULL,
-                title VARCHAR(255) NOT NULL,
-                FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE
-            )
-        `;
-
         const createQuestionsTable = `
             CREATE TABLE IF NOT EXISTS questions (
                 id VARCHAR(36) PRIMARY KEY,
-                subject_id VARCHAR(36) NOT NULL,
+                exam_id VARCHAR(36) NOT NULL,
+                class_subject_id VARCHAR(36) NOT NULL,
                 question_text TEXT NOT NULL,
                 options JSON NOT NULL,
                 correct_answer_index INT NOT NULL,
-                FOREIGN KEY (subject_id) REFERENCES subjects(id) ON DELETE CASCADE
+                FOREIGN KEY (exam_id) REFERENCES exams(id) ON DELETE CASCADE,
+                FOREIGN KEY (class_subject_id) REFERENCES class_subjects(id) ON DELETE CASCADE
             )
         `;
 
@@ -969,10 +962,15 @@ async function initializeDatabase() {
         } catch (error) {
             console.log("Error updating exams table:", error.message);
         }
-        await connection.query(createSubjectsTable);
-        console.log("Subjects table created");
+        
+        // Drop the redundant subjects table if it exists
+        await connection.query('DROP TABLE IF EXISTS subjects');
+        console.log("Redundant 'subjects' table dropped if it existed.");
+
+        // Drop and recreate questions table with correct foreign keys
+        await connection.query('DROP TABLE IF EXISTS questions');
         await connection.query(createQuestionsTable);
-        console.log("Questions table created");
+        console.log("Questions table recreated with correct schema.");
         await connection.query(createExamResultsTable);
         console.log("Exam results table created");
         await connection.query(createTimetablesTable);

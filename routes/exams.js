@@ -19,21 +19,16 @@ router.post('/store', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, re
         examType,
         assessment_type,
         subjectType,
-        class_subject_id,
         title,
         class_id,
         dateTime,
         duration_minutes,
-        subjects
+        subjects // Now an array of { class_subject_id, questions: [...] }
     } = req.body;
 
     // Basic validation
-    if (!examType || !assessment_type || !subjectType || !title || !class_id || !dateTime || !duration_minutes || !subjects) {
-        return res.status(400).json({ success: false, message: 'Please provide all required fields.' });
-    }
-
-    if (subjectType === 'single' && !class_subject_id) {
-        return res.status(400).json({ success: false, message: 'Please provide class_subject_id for single subject exams.' });
+    if (!examType || !assessment_type || !subjectType || !title || !class_id || !dateTime || !duration_minutes || !subjects || !Array.isArray(subjects) || subjects.length === 0) {
+        return res.status(400).json({ success: false, message: 'Please provide all required fields, including at least one subject with questions.' });
     }
 
     const connection = await pool.getConnection();
@@ -53,35 +48,29 @@ router.post('/store', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, re
             return res.status(400).json({ success: false, message: 'Class not found for the given branch.' });
         }
 
-        if (class_subject_id) {
-            const [subjectCheck] = await connection.query('SELECT class_id FROM class_subjects WHERE id = ?', [class_subject_id]);
+        // Validate all subject IDs
+        for (const subject of subjects) {
+            const [subjectCheck] = await connection.query('SELECT class_id FROM class_subjects WHERE id = ?', [subject.class_subject_id]);
             if (subjectCheck.length === 0) {
                 await connection.rollback();
-                return res.status(400).json({ success: false, message: 'class_subject_id is invalid.' });
+                return res.status(400).json({ success: false, message: `Invalid class_subject_id: ${subject.class_subject_id}` });
             }
             if (subjectCheck[0].class_id !== class_id) {
                 await connection.rollback();
-                return res.status(400).json({ success: false, message: 'Subject does not belong to the prospective class.' });
+                return res.status(400).json({ success: false, message: `Subject ${subject.class_subject_id} does not belong to the specified class.` });
             }
         }
 
         // Check for scheduling conflicts
         const newExamStartTime = new Date(dateTime);
         const newExamEndTime = new Date(newExamStartTime.getTime() + duration_minutes * 60 * 1000);
-
         const [existingExams] = await connection.query('SELECT exam_date_time, duration_minutes FROM exams WHERE class_id = ?', [class_id]);
-
         for (const existingExam of existingExams) {
             const existingExamStartTime = new Date(existingExam.exam_date_time);
             const existingExamEndTime = new Date(existingExamStartTime.getTime() + existingExam.duration_minutes * 60 * 1000);
-
-            // Check if the time ranges overlap. Exams can be scheduled back-to-back.
             if (newExamStartTime < existingExamEndTime && newExamEndTime > existingExamStartTime) {
                 await connection.rollback();
-                return res.status(400).json({
-                    success: false,
-                    message: 'Schedule conflict: The new exam time overlaps with an existing one.'
-                });
+                return res.status(400).json({ success: false, message: 'Schedule conflict: The new exam time overlaps with an existing one.' });
             }
         }
 
@@ -91,28 +80,21 @@ router.post('/store', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, re
             exam_type: examType,
             assessment_type,
             subject_type: subjectType,
-            class_subject_id: subjectType === 'single' ? class_subject_id : null,
+            class_subject_id: subjectType === 'Single-Subject' ? subjects[0].class_subject_id : null,
             class_id,
             branch_id,
             exam_date_time: dateTime,
             duration_minutes,
             created_by: req.user.id
         };
-
         await connection.query('INSERT INTO exams SET ?', newExam);
 
         for (const subject of subjects) {
-            const newSubject = {
-                id: uuidv4(),
-                exam_id: newExam.id,
-                title: subject.title
-            };
-            await connection.query('INSERT INTO subjects SET ?', newSubject);
-
             for (const question of subject.questions) {
                 const newQuestion = {
                     id: uuidv4(),
-                    subject_id: newSubject.id,
+                    exam_id: newExam.id,
+                    class_subject_id: subject.class_subject_id,
                     question_text: question.text,
                     options: JSON.stringify(question.options),
                     correct_answer_index: question.correctAnswerIndex
@@ -146,12 +128,18 @@ router.get('/', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => 
                 e.exam_type,
                 c.name as exam_class,
                 e.subject_type,
-                e.exam_date_time,
+                CASE
+                    WHEN e.subject_type = 'Single-Subject' THEN cs.name
+                    ELSE (SELECT GROUP_CONCAT(DISTINCT cs.name SEPARATOR ', ') FROM questions q JOIN class_subjects cs ON q.class_subject_id = cs.id WHERE q.exam_id = e.id)
+                END as subject_name,
+                e.class_subject_id,
+                DATE_FORMAT(e.exam_date_time, '%Y-%m-%d %H:%i') as exam_date_time,
                 b.school_name as branch,
                 e.duration_minutes as exam_duration
             FROM exams e
             JOIN classes c ON e.class_id = c.id
             JOIN branches b ON e.branch_id = b.id
+            LEFT JOIN class_subjects cs ON e.class_subject_id = cs.id
         `;
         const queryParams = [];
 
@@ -297,7 +285,23 @@ router.get('/class', [auth, authorize(['Teacher'])], async (req, res) => {
 
         const classIds = classes.map(c => c.id);
 
-        const [exams] = await pool.query('SELECT * FROM exams WHERE class_id IN (?) ORDER BY exam_date_time DESC', [classIds]);
+        const query = `
+            SELECT 
+                e.id,
+                e.title,
+                e.exam_type,
+                e.assessment_type,
+                e.subject_type,
+                e.class_subject_id,
+                e.class_id,
+                DATE_FORMAT(e.exam_date_time, '%Y-%m-%d %H:%i') as exam_date_time,
+                e.duration_minutes
+            FROM exams e
+            WHERE e.class_id IN (?) 
+            ORDER BY e.exam_date_time DESC
+        `;
+
+        const [exams] = await pool.query(query, [classIds]);
 
         res.json({ success: true, data: exams });
 
@@ -316,14 +320,15 @@ router.get('/upcoming', async (req, res) => {
         const query = `
             SELECT
                 e.title,
-                e.exam_date_time AS date,
+                DATE_FORMAT(e.exam_date_time, '%Y-%m-%d %H:%i') AS date,
                 c.name AS class,
                 b.school_name as branch,
-                GROUP_CONCAT(s.title) AS subjects
+                GROUP_CONCAT(DISTINCT cs.name SEPARATOR ', ') AS subjects
             FROM exams e
             JOIN classes c ON e.class_id = c.id
             JOIN branches b ON e.branch_id = b.id
-            LEFT JOIN subjects s ON e.id = s.exam_id
+            LEFT JOIN questions q ON e.id = q.exam_id
+            LEFT JOIN class_subjects cs ON q.class_subject_id = cs.id
             WHERE e.exam_date_time > NOW()
             GROUP BY e.id, e.title, e.exam_date_time, c.name, b.school_name
             ORDER BY e.exam_date_time ASC;
@@ -410,14 +415,15 @@ router.get('/me/upcoming', auth, authorize(['Student', 'NewStudent', 'Parent', '
         const query = `
             SELECT
                 e.title,
-                e.exam_date_time AS date,
+                DATE_FORMAT(e.exam_date_time, '%Y-%m-%d %H:%i') AS date,
                 c.name AS class,
                 b.school_name as branch,
-                GROUP_CONCAT(s.title) AS subjects
+                GROUP_CONCAT(DISTINCT cs.name SEPARATOR ', ') AS subjects
             FROM exams e
             JOIN classes c ON e.class_id = c.id
             JOIN branches b ON e.branch_id = b.id
-            LEFT JOIN subjects s ON e.id = s.exam_id
+            LEFT JOIN questions q ON e.id = q.exam_id
+            LEFT JOIN class_subjects cs ON q.class_subject_id = cs.id
             WHERE e.exam_date_time > NOW() AND e.class_id IN (?) AND e.exam_type = ?
             GROUP BY e.id, e.title, e.exam_date_time, c.name, b.school_name
             ORDER BY e.exam_date_time ASC;
@@ -444,7 +450,7 @@ router.get('/me/upcoming', auth, authorize(['Student', 'NewStudent', 'Parent', '
 // --- CBT Student Facing Endpoints ---
 
 // @route   GET /api/exams/subjects
-// @desc    Get subjects for the logged-in student's exam
+// @desc    Get subjects for the logged-in student's upcoming exam
 // @access  Student, NewStudent
 router.get('/subjects', [auth, authorize(['Student', 'NewStudent'])], async (req, res) => {
     try {
@@ -479,7 +485,12 @@ router.get('/subjects', [auth, authorize(['Student', 'NewStudent'])], async (req
         const examId = exam[0].id;
         const examDuration = exam[0].duration_minutes;
 
-        const [subjects] = await pool.query('SELECT id, title FROM subjects WHERE exam_id = ?', [examId]);
+        const [subjects] = await pool.query(`
+            SELECT DISTINCT q.class_subject_id as id, cs.name as title
+            FROM questions q
+            JOIN class_subjects cs ON q.class_subject_id = cs.id
+            WHERE q.exam_id = ?
+        `, [examId]);
 
         res.json({
             success: true,
@@ -489,25 +500,22 @@ router.get('/subjects', [auth, authorize(['Student', 'NewStudent'])], async (req
                 subjects
             }
         });
-        console.log('Subjects fetched successfully.');
+        console.log('Subjects for exam fetched successfully.');
     } catch (err) {
         console.error(err);
         res.status(500).json({ success: false, message: 'Server Error' });
     }
 });
 
-// @route   GET /api/exams/subjects/:subjectId/questions
-// @desc    Get questions for a specific subject
+// @route   GET /api/exams/:examId/subjects/:subjectId/questions
+// @desc    Get questions for a specific subject within an exam
 // @access  Student, NewStudent
-router.get('/subjects/:subjectId/questions', [auth, authorize(['Student', 'NewStudent'])], async (req, res) => {
+router.get('/:examId/subjects/:subjectId/questions', [auth, authorize(['Student', 'NewStudent'])], async (req, res) => {
     try {
-        // Find the exam for the subject to check the time window
-        const [subjects] = await pool.query('SELECT exam_id FROM subjects WHERE id = ?', [req.params.subjectId]);
-        if (subjects.length === 0) {
-            return res.status(404).json({ success: false, message: 'Subject not found.' });
-        }
+        const { examId, subjectId } = req.params;
 
-        const [exams] = await pool.query('SELECT exam_date_time, duration_minutes FROM exams WHERE id = ?', [subjects[0].exam_id]);
+        // Find the exam to check the time window
+        const [exams] = await pool.query('SELECT exam_date_time, duration_minutes FROM exams WHERE id = ?', [examId]);
         if (exams.length === 0) {
             return res.status(404).json({ success: false, message: 'Exam not found for this subject.' });
         }
@@ -529,7 +537,7 @@ router.get('/subjects/:subjectId/questions', [auth, authorize(['Student', 'NewSt
             return res.status(403).json({ success: false, message: 'The time for this exam has passed.' });
         }
 
-        const [questionsFromDb] = await pool.query('SELECT id, question_text as text, options FROM questions WHERE subject_id = ?', [req.params.subjectId]);
+        const [questionsFromDb] = await pool.query('SELECT id, question_text as text, options FROM questions WHERE exam_id = ? AND class_subject_id = ?', [examId, subjectId]);
 
         // Shuffle options for each question
         const questions = questionsFromDb.map(q => {
@@ -596,10 +604,9 @@ router.post('/answers', [auth, authorize(['Student', 'NewStudent'])], async (req
 
         // Fetch all questions for the exam to validate answers and calculate score
         const [allQuestions] = await connection.query(`
-            SELECT q.id, q.options, q.correct_answer_index 
+            SELECT q.id, q.options, q.correct_answer_index, q.class_subject_id
             FROM questions q
-            JOIN subjects s ON q.subject_id = s.id
-            WHERE s.exam_id = ?
+            WHERE q.exam_id = ?
         `, [examId]);
 
         if (allQuestions.length === 0) {
@@ -611,23 +618,24 @@ router.post('/answers', [auth, authorize(['Student', 'NewStudent'])], async (req
         const questionMap = new Map(allQuestions.map(q => {
             const options = JSON.parse(q.options);
             const correctAnswer = options[q.correct_answer_index];
-            return [q.id, correctAnswer];
+            return [q.id, { correctAnswer, class_subject_id: q.class_subject_id }];
         }));
 
-        let score = 0;
+        const scoresBySubject = {};
+
         for (const answer of answers) {
             const { questionId, selectedOptionValue } = answer;
-
             if (questionMap.has(questionId)) {
-                // Compare the submitted answer value with the correct answer value
-                if (questionMap.get(questionId) === selectedOptionValue) {
-                    score++;
+                const { correctAnswer, class_subject_id } = questionMap.get(questionId);
+                if (!scoresBySubject[class_subject_id]) {
+                    scoresBySubject[class_subject_id] = { score: 0, total: 0 };
+                }
+                scoresBySubject[class_subject_id].total++;
+                if (correctAnswer === selectedOptionValue) {
+                    scoresBySubject[class_subject_id].score++;
                 }
             }
         }
-
-        // Avoid division by zero if an exam has no questions
-        const percentageScore = totalQuestions > 0 ? (score / totalQuestions) * 100 : 0;
 
         // Get active term for the branch
         const [terms] = await connection.query('SELECT id FROM terms WHERE branch_id = ? AND is_active = TRUE', [exam.branch_id]);
@@ -646,17 +654,20 @@ router.post('/answers', [auth, authorize(['Student', 'NewStudent'])], async (req
 
         await connection.query('INSERT INTO exam_results SET ?', result);
 
-        // Sync with student_results if this is a single-subject exam
-        if (exam.class_subject_id) {
-            const [student] = await connection.query('SELECT id FROM students WHERE user_id = ?', [userId]);
-            if (student.length > 0) {
-                const studentId = student[0].id;
-                const [subject] = await connection.query('SELECT teacher_id FROM class_subjects WHERE id = ?', [exam.class_subject_id]);
+        // Sync scores with student_results table
+        const [student] = await connection.query('SELECT id FROM students WHERE user_id = ?', [userId]);
+        if (student.length > 0) {
+            const studentId = student[0].id;
+            for (const subjectId in scoresBySubject) {
+                const { score, total } = scoresBySubject[subjectId];
+                const percentageScore = total > 0 ? (score / total) * 100 : 0;
+
+                const [subject] = await connection.query('SELECT teacher_id FROM class_subjects WHERE id = ?', [subjectId]);
                 const teacherId = subject.length > 0 ? subject[0].teacher_id : null;
 
                 const [existing] = await connection.query(
                     'SELECT id FROM student_results WHERE student_id = ? AND subject_id = ? AND term_id = ? AND assessment_type = ?',
-                    [studentId, exam.class_subject_id, termId, exam.assessment_type]
+                    [studentId, subjectId, termId, exam.assessment_type]
                 );
 
                 if (existing.length > 0) {
@@ -668,7 +679,7 @@ router.post('/answers', [auth, authorize(['Student', 'NewStudent'])], async (req
                     const resultId = uuidv4();
                     await connection.query(
                         'INSERT INTO student_results (id, student_id, class_id, subject_id, term_id, assessment_type, score, teacher_id, branch_id, exam_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-                        [resultId, studentId, exam.class_id, exam.class_subject_id, termId, exam.assessment_type, percentageScore, teacherId, exam.branch_id, examId]
+                        [resultId, studentId, exam.class_id, subjectId, termId, exam.assessment_type, percentageScore, teacherId, exam.branch_id, examId]
                     );
                 }
             }

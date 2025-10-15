@@ -394,4 +394,56 @@ router.get('/analysis-page', [auth, authorize(['SuperAdmin', 'Admin'])], async (
     }
 });
 
+// @route   GET /api/analytics/overview
+// @desc    Get overview counts for classes, teachers, and subjects
+// @access  Admin, SuperAdmin
+router.get('/overview', [auth, authorize(['SuperAdmin', 'Admin'])], async (req, res) => {
+    let connection;
+    try {
+        connection = await pool.getConnection();
+        let adminBranchId = null;
+
+        if (req.user.roles.includes('Admin')) {
+            const [staff] = await connection.query('SELECT branch_id FROM staff WHERE user_id = ?', [req.user.id]);
+            if (staff.length > 0 && staff[0].branch_id) {
+                adminBranchId = staff[0].branch_id;
+            }
+        }
+
+        const branchParams = adminBranchId ? [adminBranchId] : [];
+        const branchFilter = adminBranchId ? `WHERE branch_id = ?` : '';
+
+        const [[{ count: classCount }]] = await connection.query(`SELECT COUNT(*) as count FROM classes ${branchFilter}`, branchParams);
+        
+        const teacherRoleQuery = `SELECT id FROM roles WHERE name = 'Teacher'`;
+        const [teacherRole] = await connection.query(teacherRoleQuery);
+        if (teacherRole.length === 0) {
+            return res.status(500).json({ success: false, message: 'Teacher role not found.' });
+        }
+        const teacherRoleId = teacherRole[0].id;
+
+        const teacherFilter = adminBranchId ? `WHERE role_id = ? AND branch_id = ?` : `WHERE role_id = ?`;
+        const teacherParams = adminBranchId ? [teacherRoleId, adminBranchId] : [teacherRoleId];
+        const [[{ count: teacherCount }]] = await connection.query(`SELECT COUNT(*) as count FROM staff ${teacherFilter}`, teacherParams);
+
+        const [[{ count: subjectCount }]] = await connection.query(`SELECT COUNT(*) as count FROM class_subjects ${branchFilter}`, branchParams);
+
+        res.json({
+            success: true,
+            data: {
+                totalClasses: classCount,
+                totalTeachers: teacherCount,
+                totalSubjects: subjectCount
+            }
+        });
+
+    } catch (error) {
+        console.error('Analytics Overview Error:', error);
+        res.status(500).json({ success: false, message: 'Server error while fetching overview data.' });
+    } finally {
+        if (connection) connection.release();
+    }
+});
+
+
 module.exports = router;
