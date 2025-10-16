@@ -416,11 +416,19 @@ router.get('/me/upcoming', auth, authorize(['Student', 'NewStudent', 'Parent', '
         }
 
         let examTypeFilter = '';
+        let queryParams = [uniqueClassIds];
+        let whereClauses = ['e.exam_date_time > NOW()', 'e.class_id IN (?)'];
+
         if (roles.includes('NewStudent')) {
             examTypeFilter = 'External';
+            whereClauses.push('e.exam_type = ?');
+            queryParams.push(examTypeFilter);
         } else if (roles.includes('Student')) {
             examTypeFilter = 'Internal';
+            whereClauses.push('e.exam_type = ?');
+            queryParams.push(examTypeFilter);
         }
+        // No examTypeFilter for teachers, so they see all types
 
         const query = `
             SELECT
@@ -434,12 +442,12 @@ router.get('/me/upcoming', auth, authorize(['Student', 'NewStudent', 'Parent', '
             JOIN branches b ON e.branch_id = b.id
             LEFT JOIN questions q ON e.id = q.exam_id
             LEFT JOIN class_subjects cs ON q.class_subject_id = cs.id
-            WHERE e.exam_date_time > NOW() AND e.class_id IN (?) AND e.exam_type = ?
+            WHERE ${whereClauses.join(' AND ')}
             GROUP BY e.id, e.title, e.exam_date_time, c.name, b.school_name
             ORDER BY e.exam_date_time ASC;
         `;
 
-        const [exams] = await connection.query(query, [uniqueClassIds, examTypeFilter]);
+        const [exams] = await connection.query(query, queryParams);
 
         const upcomingExams = exams.map(exam => ({
             ...exam,

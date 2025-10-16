@@ -741,14 +741,21 @@ router.get('/student/:student_id/report-card', [auth, authorize(['Teacher', 'Adm
         }
         const [classInfo] = await connection.query('SELECT name, arm FROM classes WHERE id = ?', [studentData.class_id]);
 
-        // 3. Fetch all published results for the entire class for the specified term
-        const [allResults] = await connection.query(
-            `SELECT sr.student_id, sr.subject_id, cs.name as subject_name, sr.assessment_type, sr.score
-             FROM student_results sr
-             JOIN class_subjects cs ON sr.subject_id = cs.id
-             WHERE sr.class_id = ? AND sr.term_id = ? AND sr.published = TRUE`,
-            [studentData.class_id, term_id]
-        );
+        // 3. Fetch results for the entire class for the specified term
+        let resultsQuery = `
+            SELECT sr.student_id, sr.subject_id, cs.name as subject_name, sr.assessment_type, sr.score
+            FROM student_results sr
+            JOIN class_subjects cs ON sr.subject_id = cs.id
+            WHERE sr.class_id = ? AND sr.term_id = ?
+        `;
+        const queryParams = [studentData.class_id, term_id];
+
+        // Only show published results to students and parents
+        if (req.user.roles.includes('Student') || req.user.roles.includes('Parent')) {
+            resultsQuery += ' AND sr.published = TRUE';
+        }
+
+        const [allResults] = await connection.query(resultsQuery, queryParams);
 
         if (allResults.length === 0) {
             return res.status(200).json({ success: true, data: { results: [] }, message: 'No published results found for this student in the selected term.' });

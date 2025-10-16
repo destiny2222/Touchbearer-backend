@@ -38,7 +38,7 @@ router.get('/', auth, async (req, res) => {
 
 // POST /api/terms/new - Trigger a new term (reset payment statuses but keep history)
 router.post('/new', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => {
-    const { name, session, start_date, end_date, branch_id } = req.body; // session and branch_id are optional
+    const { name, session, start_date, end_date, branch_id, next_term_begins } = req.body; // session, branch_id, and next_term_begins are optional
 
     if (!name || !start_date || !end_date) {
         return res.status(400).json({ success: false, message: 'Missing required fields.' });
@@ -79,6 +79,7 @@ router.post('/new', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res)
             branch_id: termBranchId || null,
             start_date,
             end_date,
+            next_term_begins: next_term_begins || null,
             is_active: true,
         };
         await connection.query('INSERT INTO terms SET ?', newTerm);
@@ -112,49 +113,65 @@ router.post('/new', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res)
 // GET /api/terms/current - Get the current active term
 router.get('/current', auth, async (req, res) => {
     try {
-        let query = 'SELECT * FROM terms WHERE is_active = TRUE';
-        const queryParams = [];
+        let branchId = null;
+        const { roles, id: userId } = req.user;
 
-        // If user is Admin, get term for their branch only
-        if (req.user.roles.includes('Admin')) {
-            const adminBranchId = await getAdminBranchId(req.user.id);
-            if (!adminBranchId) {
-                return res.status(403).json({ success: false, message: 'Admin is not associated with any branch.' });
+        // Determine the branch_id based on user role
+        if (roles.includes('Admin') || roles.includes('Teacher') || roles.includes('NonTeachingStaff')) {
+            const [staff] = await pool.query('SELECT branch_id FROM staff WHERE user_id = ?', [userId]);
+            if (staff.length > 0) {
+                branchId = staff[0].branch_id;
             }
-            query += ' AND branch_id = ?';
-            queryParams.push(adminBranchId);
-        } else if (req.user.roles.includes('SuperAdmin')) {
-            // SuperAdmin can get any term, but prioritize global terms first
-            query += ' ORDER BY CASE WHEN branch_id IS NULL THEN 0 ELSE 1 END, created_at DESC';
-        } else {
-            // For other roles, get the term for their associated branch
-            const [userBranch] = await pool.query(`
-                SELECT branch_id FROM students WHERE user_id = ?
-                UNION
-                SELECT branch_id FROM staff WHERE user_id = ?
-            `, [req.user.id, req.user.id]);
+        } else if (roles.includes('Student') || roles.includes('Parent')) {
+            // A parent's branch is determined by their child's branch. This assumes one child for simplicity.
+            // A more complex system would need to know which child's context we are in.
+            const [student] = await pool.query(`
+                SELECT s.branch_id 
+                FROM students s
+                LEFT JOIN parents p ON s.parent_id = p.id
+                WHERE s.user_id = ? OR p.user_id = ?
+                LIMIT 1
+            `, [userId, userId]);
+            if (student.length > 0) {
+                branchId = student[0].branch_id;
+            }
+        }
+        // SuperAdmin has branchId = null, so they will check for global/most recent terms.
 
-            if (userBranch.length > 0) {
-                query += ' AND branch_id = ?';
-                queryParams.push(userBranch[0].branch_id);
-            } else {
-                // If no branch association, get global terms
-                query += ' AND branch_id IS NULL';
+        let term = null;
+
+        // 1. Try to find a branch-specific active term
+        if (branchId) {
+            const [terms] = await pool.query('SELECT * FROM terms WHERE is_active = TRUE AND branch_id = ?', [branchId]);
+            if (terms.length > 0) {
+                term = terms[0];
             }
         }
 
-        const [terms] = await pool.query(query, queryParams);
+        // 2. If no branch-specific term, try to find a global active term
+        if (!term) {
+            const [globalTerms] = await pool.query('SELECT * FROM terms WHERE is_active = TRUE AND branch_id IS NULL ORDER BY start_date DESC');
+            if (globalTerms.length > 0) {
+                term = globalTerms[0];
+            }
+        }
+        
+        // 3. If still no term and user is SuperAdmin, find the most recent active term regardless of branch
+        if (!term && roles.includes('SuperAdmin')) {
+             const [anyActiveTerm] = await pool.query('SELECT * FROM terms WHERE is_active = TRUE ORDER BY start_date DESC');
+             if (anyActiveTerm.length > 0) {
+                term = anyActiveTerm[0];
+             }
+        }
 
-        if (terms.length === 0) {
+
+        if (!term) {
             return res.status(404).json({ success: false, message: 'No active term found.' });
         }
 
-        // Return the first (most relevant) term
-        const currentTerm = terms[0];
-
         res.json({
             success: true,
-            data: currentTerm
+            data: term
         });
     } catch (error) {
         console.error('Get current term error:', error);

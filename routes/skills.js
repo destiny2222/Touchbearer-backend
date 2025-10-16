@@ -78,7 +78,16 @@ router.post('/save', [auth, authorize(['Teacher', 'Admin', 'SuperAdmin'])], asyn
             return res.status(403).json({ success: false, message: 'Staff record not found.' });
         }
 
-        if (req.user.roles.includes('Teacher') || req.user.roles.includes('Admin')) {
+        if (req.user.roles.includes('Teacher') && !req.user.roles.includes('Admin') && !req.user.roles.includes('SuperAdmin')) {
+            const [studentDetails] = await connection.query('SELECT class_id FROM students WHERE id = ?', [student_id]);
+            const [teacherClass] = await connection.query('SELECT id FROM classes WHERE teacher_id = ? AND id = ?', [staffInfo.id, studentDetails[0].class_id]);
+            if (teacherClass.length === 0) {
+                await connection.rollback();
+                return res.status(403).json({ success: false, message: 'Only the class teacher can save skills.' });
+            }
+        }
+
+        if (req.user.roles.includes('Admin') && !req.user.roles.includes('SuperAdmin')) {
             if (staffInfo.branch_id !== studentBranchId) {
                 await connection.rollback();
                 return res.status(403).json({ success: false, message: 'You can only manage skills for students in your own branch.' });

@@ -960,6 +960,10 @@ async function initializeDatabase() {
                 await connection.query('ALTER TABLE terms ADD COLUMN session VARCHAR(50) AFTER name');
                 console.log("Added 'session' column to terms table");
             }
+            if (!existingTermCols.includes('next_term_begins')) {
+                await connection.query('ALTER TABLE terms ADD COLUMN next_term_begins DATE NULL AFTER end_date');
+                console.log("Added 'next_term_begins' column to terms table");
+            }
         } catch (error) {
             console.log("Error updating terms table:", error.message);
         }
