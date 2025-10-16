@@ -968,7 +968,6 @@ async function initializeDatabase() {
         console.log("Redundant 'subjects' table dropped if it existed.");
 
         // Drop and recreate questions table with correct foreign keys
-        await connection.query('DROP TABLE IF EXISTS questions');
         await connection.query(createQuestionsTable);
         console.log("Questions table recreated with correct schema.");
         await connection.query(createExamResultsTable);

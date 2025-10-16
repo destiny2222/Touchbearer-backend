@@ -31,6 +31,16 @@ router.post('/store', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, re
         return res.status(400).json({ success: false, message: 'Please provide all required fields, including at least one subject with questions.' });
     }
 
+    // Ensure every subject has questions
+    for (const subject of subjects) {
+        if (!subject.questions || !Array.isArray(subject.questions) || subject.questions.length === 0) {
+            return res.status(400).json({
+                success: false,
+                message: `Each subject must contain a non-empty 'questions' array.`
+            });
+        }
+    }
+
     const connection = await pool.getConnection();
     try {
         await connection.beginTransaction();
@@ -449,6 +459,96 @@ router.get('/me/upcoming', auth, authorize(['Student', 'NewStudent', 'Parent', '
 
 // --- CBT Student Facing Endpoints ---
 
+// @route   GET /api/exams/student/current-exam
+// @desc    Get details of the current exam for the logged-in student
+// @access  Student, NewStudent
+router.get('/student/current-exam', [auth, authorize(['Student', 'NewStudent'])], async (req, res) => {
+    try {
+        let studentClassId;
+        let examTypeFilter;
+        const { roles } = req.user;
+
+        if (roles.includes('NewStudent')) {
+            const [newStudent] = await pool.query('SELECT class_id FROM new_students WHERE student_id = (SELECT email FROM users WHERE id = ?)', [req.user.id]);
+            if (newStudent.length > 0) {
+                studentClassId = newStudent[0].class_id;
+                examTypeFilter = 'External';
+            }
+        } else if (roles.includes('Student')) {
+            const [existingStudent] = await pool.query('SELECT class_id FROM students WHERE user_id = ?', [req.user.id]);
+            if (existingStudent.length > 0) {
+                studentClassId = existingStudent[0].class_id;
+                examTypeFilter = 'Internal';
+            }
+        }
+
+        if (!studentClassId) {
+            return res.status(404).json({ success: false, message: "Student class not found." });
+        }
+
+        // Find an exam that is currently active or starting within 30 minutes
+        const [exam] = await pool.query(`
+            SELECT id, title, duration_minutes, exam_date_time
+            FROM exams
+            WHERE class_id = ?
+              AND exam_type = ?
+              AND (UTC_TIMESTAMP() + INTERVAL 1 HOUR) >= exam_date_time - INTERVAL 30 MINUTE
+              AND (UTC_TIMESTAMP() + INTERVAL 1 HOUR) <= exam_date_time + INTERVAL duration_minutes MINUTE
+            ORDER BY exam_date_time ASC
+            LIMIT 1
+        `, [studentClassId, examTypeFilter]);
+
+        if (exam.length === 0) {
+            return res.status(404).json({ success: false, message: "No current exam available for you at this time." });
+        }
+
+        const currentExam = exam[0];
+        const examId = currentExam.id;
+
+        // Fetch subjects and their questions for the exam
+        const [questionsFromDb] = await pool.query(`
+            SELECT q.id, q.question_text as text, q.options, q.class_subject_id, cs.name as subject_name
+            FROM questions q
+            JOIN class_subjects cs ON q.class_subject_id = cs.id
+            WHERE q.exam_id = ?
+            ORDER BY cs.name
+        `, [examId]);
+
+        const subjects = {};
+        questionsFromDb.forEach(q => {
+            if (!subjects[q.class_subject_id]) {
+                subjects[q.class_subject_id] = {
+                    id: q.class_subject_id,
+                    title: q.subject_name,
+                    questions: []
+                };
+            }
+
+            subjects[q.class_subject_id].questions.push({
+                id: q.id,
+                text: q.text,
+                options: JSON.parse(q.options)
+            });
+        });
+
+        res.json({
+            success: true,
+            data: {
+                examId: currentExam.id,
+                title: currentExam.title,
+                examDuration: currentExam.duration_minutes,
+                examStartTime: currentExam.exam_date_time,
+                subjects: Object.values(subjects)
+            }
+        });
+        console.log('Current exam details fetched successfully.');
+
+    } catch (err) {
+        console.error('Error fetching current exam:', err);
+        res.status(500).json({ success: false, message: 'Server Error' });
+    }
+});
+
 // @route   GET /api/exams/subjects
 // @desc    Get subjects for the logged-in student's upcoming exam
 // @access  Student, NewStudent
@@ -539,20 +639,11 @@ router.get('/:examId/subjects/:subjectId/questions', [auth, authorize(['Student'
 
         const [questionsFromDb] = await pool.query('SELECT id, question_text as text, options FROM questions WHERE exam_id = ? AND class_subject_id = ?', [examId, subjectId]);
 
-        // Shuffle options for each question
-        const questions = questionsFromDb.map(q => {
-            const options = JSON.parse(q.options);
-            // Fisher-Yates shuffle algorithm
-            for (let i = options.length - 1; i > 0; i--) {
-                const j = Math.floor(Math.random() * (i + 1));
-                [options[i], options[j]] = [options[j], options[i]];
-            }
-            return {
-                id: q.id,
-                text: q.text,
-                options: options
-            };
-        });
+        const questions = questionsFromDb.map(q => ({
+            id: q.id,
+            text: q.text,
+            options: JSON.parse(q.options)
+        }));
 
         res.json({ success: true, data: questions });
         console.log('Questions fetched successfully with shuffled options.');
@@ -567,7 +658,7 @@ router.get('/:examId/subjects/:subjectId/questions', [auth, authorize(['Student'
 // @desc    Submit answers and calculate score
 // @access  Student, NewStudent
 router.post('/answers', [auth, authorize(['Student', 'NewStudent'])], async (req, res) => {
-    const { examId, answers } = req.body; // answers: [{ questionId: string, selectedOptionValue: string }]
+    const { examId, answers } = req.body; // answers: [{ questionId: string, selectedOptionIndex: number }]
     const userId = req.user.id;
 
     if (!examId || !answers || !Array.isArray(answers)) {
@@ -616,26 +707,37 @@ router.post('/answers', [auth, authorize(['Student', 'NewStudent'])], async (req
 
         const totalQuestions = allQuestions.length;
         const questionMap = new Map(allQuestions.map(q => {
-            const options = JSON.parse(q.options);
-            const correctAnswer = options[q.correct_answer_index];
-            return [q.id, { correctAnswer, class_subject_id: q.class_subject_id }];
+            return [q.id, {
+                options: JSON.parse(q.options),
+                correctAnswerIndex: q.correct_answer_index,
+                class_subject_id: q.class_subject_id
+            }];
         }));
 
         const scoresBySubject = {};
 
         for (const answer of answers) {
-            const { questionId, selectedOptionValue } = answer;
+            const { questionId, selectedOptionIndex } = answer;
             if (questionMap.has(questionId)) {
-                const { correctAnswer, class_subject_id } = questionMap.get(questionId);
+                const { correctAnswerIndex, class_subject_id } = questionMap.get(questionId);
+
                 if (!scoresBySubject[class_subject_id]) {
                     scoresBySubject[class_subject_id] = { score: 0, total: 0 };
                 }
                 scoresBySubject[class_subject_id].total++;
-                if (correctAnswer === selectedOptionValue) {
+
+                if (selectedOptionIndex === correctAnswerIndex) {
                     scoresBySubject[class_subject_id].score++;
                 }
             }
         }
+
+        // Calculate total score
+        let totalCorrectAnswers = 0;
+        for (const subjectId in scoresBySubject) {
+            totalCorrectAnswers += scoresBySubject[subjectId].score;
+        }
+        const percentageScore = totalQuestions > 0 ? (totalCorrectAnswers / totalQuestions) * 100 : 0;
 
         // Get active term for the branch
         const [terms] = await connection.query('SELECT id FROM terms WHERE branch_id = ? AND is_active = TRUE', [exam.branch_id]);
