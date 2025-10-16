@@ -4,6 +4,7 @@ const { v4: uuidv4 } = require('uuid');
 const { pool } = require('../database');
 const auth = require('../middleware/auth');
 const authorize = require('../middleware/authorize');
+const moment = require('moment');
 
 // Helper function to get staff info and verify teacher authorization
 async function getStaffInfo(userId) {
@@ -18,6 +19,14 @@ async function canTeacherManageSubject(teacherStaffId, subjectId) {
         [subjectId, teacherStaffId]
     );
     return rows.length > 0;
+}
+
+// Helper function to format ordinal numbers (1st, 2nd, 3rd)
+function getOrdinal(n) {
+    if (n == null) return '';
+    const s = ["th", "st", "nd", "rd"];
+    const v = n % 100;
+    return n + (s[(v - 20) % 10] || s[v] || s[0]);
 }
 
 // POST /api/results/save - Save or update student results (Upsert)
@@ -677,6 +686,220 @@ router.get('/', [auth, authorize(['Admin', 'SuperAdmin', 'Teacher'])], async (re
     } catch (err) {
         console.error('Error fetching results:', err);
         res.status(500).json({ success: false, message: 'Server error while fetching results.' });
+    }
+});
+
+// GET /api/results/student/:student_id/report-card - Get a formatted report card for a student
+router.get('/student/:student_id/report-card', [auth, authorize(['Teacher', 'Admin', 'SuperAdmin', 'Student', 'Parent'])], async (req, res) => {
+    const { student_id } = req.params;
+    const { term_id } = req.query;
+
+    if (!term_id) {
+        return res.status(400).json({ success: false, message: 'The term_id query parameter is required.' });
+    }
+
+    const connection = await pool.getConnection();
+    try {
+        // 1. Verify student exists and perform authorization checks
+        const [student] = await connection.query('SELECT id, class_id, branch_id, user_id, parent_id, first_name, last_name FROM students WHERE id = ?', [student_id]);
+        if (student.length === 0) {
+            return res.status(404).json({ success: false, message: 'Student not found.' });
+        }
+        const studentData = student[0];
+
+        // Authorization checks
+        if (req.user.roles.includes('Student')) {
+            if (studentData.user_id !== req.user.id) {
+                return res.status(403).json({ success: false, message: 'You can only view your own results.' });
+            }
+        }
+        if (req.user.roles.includes('Parent')) {
+            const [parent] = await connection.query('SELECT id FROM parents WHERE user_id = ?', [req.user.id]);
+            if (parent.length === 0 || parent[0].id !== studentData.parent_id) {
+                return res.status(403).json({ success: false, message: 'You can only view your own children\'s results.' });
+            }
+        }
+        if (req.user.roles.includes('Teacher') && !req.user.roles.includes('Admin') && !req.user.roles.includes('SuperAdmin')) {
+            const staffInfo = await getStaffInfo(req.user.id);
+            if (!staffInfo) return res.status(403).json({ success: false, message: 'Staff record not found.' });
+            const [teacherClasses] = await connection.query('SELECT id FROM classes WHERE teacher_id = ?', [staffInfo.id]);
+            if (!teacherClasses.map(c => c.id).includes(studentData.class_id)) {
+                return res.status(403).json({ success: false, message: 'You can only view results for students in your classes.' });
+            }
+        }
+        if (req.user.roles.includes('Admin') && !req.user.roles.includes('SuperAdmin')) {
+            const staffInfo = await getStaffInfo(req.user.id);
+            if (staffInfo && staffInfo.branch_id !== studentData.branch_id) {
+                return res.status(403).json({ success: false, message: 'Admins can only view results for their own branch.' });
+            }
+        }
+
+        // 2. Get Term and Class Info
+        const [termInfo] = await connection.query('SELECT name, session, start_date, end_date, next_term_begins FROM terms WHERE id = ?', [term_id]);
+        if (termInfo.length === 0) {
+            return res.status(404).json({ success: false, message: 'Term not found.' });
+        }
+        const [classInfo] = await connection.query('SELECT name, arm FROM classes WHERE id = ?', [studentData.class_id]);
+
+        // 3. Fetch all published results for the entire class for the specified term
+        const [allResults] = await connection.query(
+            `SELECT sr.student_id, sr.subject_id, cs.name as subject_name, sr.assessment_type, sr.score
+             FROM student_results sr
+             JOIN class_subjects cs ON sr.subject_id = cs.id
+             WHERE sr.class_id = ? AND sr.term_id = ? AND sr.published = TRUE`,
+            [studentData.class_id, term_id]
+        );
+
+        if (allResults.length === 0) {
+            return res.status(200).json({ success: true, data: { results: [] }, message: 'No published results found for this student in the selected term.' });
+        }
+
+        // 4. Process the results data into a nested structure
+        const resultsByStudent = {};
+        allResults.forEach(r => {
+            const studentId = r.student_id;
+            const subjectId = r.subject_id;
+            if (!resultsByStudent[studentId]) {
+                resultsByStudent[studentId] = { subjects: {}, total_score: 0 };
+            }
+            if (!resultsByStudent[studentId].subjects[subjectId]) {
+                resultsByStudent[studentId].subjects[subjectId] = { subject_name: r.subject_name };
+            }
+            resultsByStudent[studentId].subjects[subjectId][r.assessment_type] = parseFloat(r.score);
+        });
+
+        // Calculate totals for each student/subject and overall total
+        Object.keys(resultsByStudent).forEach(studentId => {
+            let studentTotalScore = 0;
+            Object.values(resultsByStudent[studentId].subjects).forEach(subject => {
+                const ca1 = subject.ca1 || 0;
+                const ca2 = subject.ca2 || 0;
+                const exam = subject.exam || 0;
+                subject.total = ca1 + ca2 + exam;
+                studentTotalScore += subject.total;
+            });
+            resultsByStudent[studentId].total_score = studentTotalScore;
+        });
+
+        // 5. Calculate stats (average, highest, lowest, position) for each subject
+        const reportCard = [];
+        const subjectsInClass = [...new Map(allResults.map(item => [item.subject_id, {id: item.subject_id, name: item.subject_name}])).values()];
+
+        for (const subject of subjectsInClass) {
+            const subjectScores = Object.values(resultsByStudent)
+                .map(student => student.subjects[subject.id]?.total)
+                .filter(total => total !== undefined && total !== null);
+
+            if (subjectScores.length === 0) continue;
+
+            const highest = Math.max(...subjectScores);
+            const lowest = Math.min(...subjectScores);
+            const average = subjectScores.reduce((a, b) => a + b, 0) / subjectScores.length;
+
+            const sortedScores = [...subjectScores].sort((a, b) => b - a);
+            
+            const studentSubjectData = resultsByStudent[student_id]?.subjects[subject.id];
+            
+            // If student has no result for this subject, we can't generate a row for them.
+            if (!studentSubjectData) continue;
+
+            const studentTotal = studentSubjectData.total;
+            const rank = sortedScores.indexOf(studentTotal) + 1;
+
+            let grade = 'F';
+            if (studentTotal >= 75) grade = 'A';
+            else if (studentTotal >= 65) grade = 'B';
+            else if (studentTotal >= 50) grade = 'C';
+            else if (studentTotal >= 45) grade = 'D';
+            else if (studentTotal >= 40) grade = 'E';
+
+            reportCard.push({
+                subject: subject.name,
+                ca1: studentSubjectData.ca1 || 0,
+                ca2: studentSubjectData.ca2 || 0,
+                exam: studentSubjectData.exam || 0,
+                total: studentTotal,
+                grade: grade,
+                position: getOrdinal(rank),
+                highest: highest,
+                lowest: lowest,
+                average: parseFloat(average.toFixed(2))
+            });
+        }
+
+        // 6. Calculate student's overall position in class
+        const allStudentTotals = Object.values(resultsByStudent).map(s => s.total_score);
+        const sortedTotals = [...allStudentTotals].sort((a, b) => b - a);
+        const studentRank = sortedTotals.indexOf(resultsByStudent[student_id].total_score) + 1;
+
+        // 7. Fetch attendance data
+        const [attendance] = await connection.query(
+            `SELECT status, COUNT(*) as count 
+             FROM student_attendance 
+             WHERE student_id = ? AND date BETWEEN ? AND ? 
+             GROUP BY status`,
+            [student_id, termInfo[0].start_date, termInfo[0].end_date]
+        );
+        const attendanceData = {
+            Present: 0,
+            Absent: 0,
+            Late: 0,
+            ...Object.fromEntries(attendance.map(a => [a.status, a.count]))
+        };
+        const schoolDays = moment(termInfo[0].end_date).diff(moment(termInfo[0].start_date), 'days');
+
+        // 8. Fetch skills data
+        const [skills] = await connection.query(
+            'SELECT skill_type, skill_name, rating FROM student_skills WHERE student_id = ? AND term_id = ?',
+            [student_id, term_id]
+        );
+        const skillsData = {
+            Affective: [],
+            Psychomotor: []
+        };
+        skills.forEach(skill => {
+            if (skillsData[skill.skill_type]) {
+                skillsData[skill.skill_type].push({ name: skill.skill_name, rating: skill.rating });
+            }
+        });
+
+        // 9. Fetch comments
+        const [comments] = await connection.query(
+            'SELECT teacher_comment, principal_comment FROM report_card_comments WHERE student_id = ? AND term_id = ?',
+            [student_id, term_id]
+        );
+        const commentData = comments.length > 0 ? comments[0] : { teacher_comment: '', principal_comment: '' };
+
+        res.json({
+            success: true,
+            data: {
+                student: {
+                    name: `${studentData.first_name} ${studentData.last_name}`,
+                    class: `${classInfo[0].name} ${classInfo[0].arm || ''}`.trim(),
+                },
+                term: {
+                    name: termInfo[0].name,
+                    session: termInfo[0].session,
+                    next_term_begins: termInfo[0].next_term_begins
+                },
+                attendance: {
+                    school_opened: schoolDays,
+                    present: attendanceData.Present,
+                    absent: attendanceData.Absent,
+                },
+                position: getOrdinal(studentRank),
+                total_students: allStudentTotals.length,
+                results: reportCard,
+                skills: skillsData,
+                comments: commentData
+            }
+        });
+
+    } catch (err) {
+        console.error('Error fetching student report card:', err);
+        res.status(500).json({ success: false, message: 'Server error while fetching report card.' });
+    } finally {
+        if (connection) connection.release();
     }
 });
 

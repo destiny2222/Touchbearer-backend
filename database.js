@@ -316,6 +316,7 @@ async function initializeDatabase() {
                 branch_id VARCHAR(36),
                 start_date DATE NOT NULL,
                 end_date DATE NOT NULL,
+                next_term_begins DATE NULL,
                 is_active BOOLEAN DEFAULT FALSE,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -690,6 +691,37 @@ async function initializeDatabase() {
             )
         `;
 
+        const createStudentSkillsTable = `
+            CREATE TABLE IF NOT EXISTS student_skills (
+                id VARCHAR(36) PRIMARY KEY,
+                student_id VARCHAR(36) NOT NULL,
+                term_id VARCHAR(36) NOT NULL,
+                skill_type ENUM('Affective', 'Psychomotor') NOT NULL,
+                skill_name VARCHAR(255) NOT NULL,
+                rating INT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY unique_skill (student_id, term_id, skill_type, skill_name),
+                FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
+                FOREIGN KEY (term_id) REFERENCES terms(id) ON DELETE CASCADE
+            )
+        `;
+
+        const createReportCardCommentsTable = `
+            CREATE TABLE IF NOT EXISTS report_card_comments (
+                id VARCHAR(36) PRIMARY KEY,
+                student_id VARCHAR(36) NOT NULL,
+                term_id VARCHAR(36) NOT NULL,
+                teacher_comment TEXT,
+                principal_comment TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY unique_comment (student_id, term_id),
+                FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
+                FOREIGN KEY (term_id) REFERENCES terms(id) ON DELETE CASCADE
+            )
+        `;
+
         // Create tables in the correct order
         await connection.query(createUsersTable);
         console.log("Users table created");
@@ -1030,6 +1062,10 @@ async function initializeDatabase() {
         console.log("Revenue table created");
         await connection.query(createStudentResultsTable);
         console.log("Student results table created");
+        await connection.query(createStudentSkillsTable);
+        console.log("Student skills table created");
+        await connection.query(createReportCardCommentsTable);
+        console.log("Report card comments table created");
 
         // Add exam_id to student_results if it doesn't exist
         try {

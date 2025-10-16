@@ -36,6 +36,8 @@ app.use('/api/analytics', require('./routes/analytics'));
 app.use('/api/ai', require('./routes/aiSummary'));
 app.use('/api/library', require('./routes/library'));
 app.use('/api/hospital', require('./routes/hospital'));
+app.use('/api/skills', require('./routes/skills'));
+app.use('/api/comments', require('./routes/comments'));
 
 app.get('/', (req, res) => {
     res.json({ message: 'Hello World!' });
