@@ -79,6 +79,32 @@ router.put('/:id', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) 
     }
 });
 
+// DELETE /api/fees/:id - Delete a fee
+router.delete('/:id', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => {
+    const { id } = req.params;
+
+    try {
+        const [feeRows] = await pool.query('SELECT * FROM fees WHERE id = ?', [id]);
+        if (feeRows.length === 0) {
+            return res.status(404).json({ success: false, message: 'Fee not found.' });
+        }
+        const fee = feeRows[0];
+
+        if (req.user.roles.includes('Admin')) {
+            const adminBranchId = await getAdminBranchId(req.user.id);
+            if (!adminBranchId || adminBranchId !== fee.branch_id) {
+                return res.status(403).json({ success: false, message: 'Admins can only delete fees for their own branch.' });
+            }
+        }
+
+        await pool.query('DELETE FROM fees WHERE id = ?', [id]);
+        res.json({ success: true, message: 'Fee deleted successfully.' });
+    } catch (error) {
+        console.error('Delete fee error:', error);
+        res.status(500).json({ success: false, message: 'Server error while deleting fee.' });
+    }
+});
+
 // GET /api/fees/class/:classId - Retrieve fees for a specific class (optionally filter by arm)
 router.get('/class/:classId', [auth], async (req, res) => {
     const { classId } = req.params;
@@ -218,6 +244,7 @@ router.get('/student-statuses', [auth, authorize(['Admin', 'SuperAdmin'])], asyn
                 s.branch_id,
                 s.class_id,
                 c.name as ClassName,
+                c.arm,
                 b.school_name as BranchName,
                 IFNULL(sps.status, 'Not Paid') as payment_status
             FROM students s
