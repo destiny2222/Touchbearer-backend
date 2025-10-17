@@ -34,14 +34,18 @@ async function getTeacherClasses(userId) {
     return { classIds, branchId: staff.branch_id };
 }
 
-async function generateStudentId() {
-    const prefix = 'ttb';
-    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+async function generateStudentId(branch_id) {
+    const [branch] = await pool.query('SELECT site_name FROM branches WHERE id = ?', [branch_id]);
+    if (branch.length === 0 || !branch[0].site_name) {
+        throw new Error('Branch site name not found for student ID generation.');
+    }
+    const prefix = 'T' + branch[0].site_name;
+    const chars = '0123456789';
     let isUnique = false;
     let studentId = '';
     while (!isUnique) {
         let randomPart = '';
-        for (let i = 0; i < 4; i++) randomPart += chars.charAt(Math.floor(Math.random() * chars.length));
+        for (let i = 0; i < 5; i++) randomPart += chars.charAt(Math.floor(Math.random() * chars.length));
         studentId = prefix + randomPart;
         const [existingUser] = await pool.query('SELECT id FROM users WHERE email = ?', [studentId]);
         if (existingUser.length === 0) isUnique = true;
@@ -138,7 +142,7 @@ router.post('/create', [auth, authorize(['Admin', 'SuperAdmin', 'Teacher'])], as
             }
 
             // Create student user
-            const studentId = await generateStudentId();
+            const studentId = await generateStudentId(branch_id);
             const tempPassword = parent.phone; // Use parent's phone number as password
             const hashed = await bcrypt.hash(tempPassword, 10);
             const studentUserId = uuidv4();

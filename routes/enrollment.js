@@ -8,28 +8,24 @@ const authorize = require('../middleware/authorize');
 // --- Helper Functions ---
 
 /**
- * Generates a unique student ID in the format 'ttbXXXX'
+ * Generates a unique student ID in the format 'T<branch_site_name>XXXXX'
  * @returns {Promise<string>} A unique student ID.
  */
-async function generateStudentId() {
-    const prefix = 'ttb';
-    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+async function generateStudentId(branch_id) {
+    const [branch] = await pool.query('SELECT site_name FROM branches WHERE id = ?', [branch_id]);
+    if (branch.length === 0 || !branch[0].site_name) {
+        throw new Error('Branch site name not found for student ID generation.');
+    }
+    const prefix = 'T' + branch[0].site_name;
+    const chars = '0123456789';
     let isUnique = false;
     let studentId = '';
-
-    // Loop until a unique ID is generated to prevent rare collisions
     while (!isUnique) {
         let randomPart = '';
-        for (let i = 0; i < 4; i++) {
-            randomPart += chars.charAt(Math.floor(Math.random() * chars.length));
-        }
+        for (let i = 0; i < 5; i++) randomPart += chars.charAt(Math.floor(Math.random() * chars.length));
         studentId = prefix + randomPart;
-
-        // Check for uniqueness in the users table
         const [existingUser] = await pool.query('SELECT id FROM users WHERE email = ?', [studentId]);
-        if (existingUser.length === 0) {
-            isUnique = true;
-        }
+        if (existingUser.length === 0) isUnique = true;
     }
     return studentId;
 }
@@ -105,7 +101,7 @@ router.post('/register', async (req, res) => {
         }
 
         // Step 2: Generate Student ID and create a user account for the new student
-        const studentId = await generateStudentId();
+        const studentId = await generateStudentId(branch_id);
         const studentTempPassword = generatePassword();
         const hashedStudentPassword = await bcrypt.hash(studentTempPassword, 10);
         const studentUserId = uuidv4();
@@ -400,6 +396,80 @@ router.put('/students/:id', [auth, authorize(['Admin', 'SuperAdmin'])], async (r
         res.status(500).json({ success: false, message: 'Server error while updating student record.' });
     } finally {
         connection.release();
+    }
+});
+
+// --- Enrollment Fee Routes ---
+
+// @route   GET /api/enrollment/fees/my-branch
+// @desc    Get the enrollment fee for the admin's branch
+// @access  Admin
+router.get('/fees/my-branch', [auth, authorize(['Admin'])], async (req, res) => {
+    try {
+        const [adminStaff] = await pool.query('SELECT branch_id FROM staff WHERE user_id = ?', [req.user.id]);
+        if (adminStaff.length === 0) {
+            return res.status(403).json({ success: false, message: 'Admin not associated with a branch.' });
+        }
+        const branch_id = adminStaff[0].branch_id;
+
+        const [fee] = await pool.query('SELECT amount FROM enrollment_fees WHERE branch_id = ?', [branch_id]);
+        if (fee.length === 0) {
+            return res.status(404).json({ success: false, message: 'Enrollment fee not set for this branch.' });
+        }
+        res.json({ success: true, data: fee[0] });
+    } catch (error) {
+        console.error('Get enrollment fee for admin branch error:', error);
+        res.status(500).json({ success: false, message: 'Server error while fetching enrollment fee.' });
+    }
+});
+
+// @route   GET /api/enrollment/fees/:branch_id
+// @desc    Get the enrollment fee for a specific branch
+// @access  Public
+router.get('/fees/:branch_id', async (req, res) => {
+    const { branch_id } = req.params;
+    try {
+        const [fee] = await pool.query('SELECT amount FROM enrollment_fees WHERE branch_id = ?', [branch_id]);
+        if (fee.length === 0) {
+            return res.status(404).json({ success: false, message: 'Enrollment fee not set for this branch.' });
+        }
+        res.json({ success: true, data: fee[0] });
+    } catch (error) {
+        console.error('Get enrollment fee error:', error);
+        res.status(500).json({ success: false, message: 'Server error while fetching enrollment fee.' });
+    }
+});
+
+// @route   POST /api/enrollment/fees
+// @desc    Create or update the enrollment fee for a branch
+// @access  Admin, SuperAdmin
+router.post('/fees', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => {
+    const { branch_id, amount } = req.body;
+
+    if (!branch_id || amount === undefined) {
+        return res.status(400).json({ success: false, message: 'Branch ID and amount are required.' });
+    }
+
+    try {
+        if (req.user.roles.includes('Admin')) {
+            const [adminStaff] = await pool.query('SELECT branch_id FROM staff WHERE user_id = ?', [req.user.id]);
+            if (adminStaff.length === 0 || adminStaff[0].branch_id !== branch_id) {
+                return res.status(403).json({ success: false, message: 'You are not authorized to set the fee for this branch.' });
+            }
+        }
+
+        const query = `
+            INSERT INTO enrollment_fees (branch_id, amount) 
+            VALUES (?, ?) 
+            ON DUPLICATE KEY UPDATE amount = ?
+        `;
+        await pool.query(query, [branch_id, amount, amount]);
+
+        res.json({ success: true, message: 'Enrollment fee set successfully.' });
+
+    } catch (error) {
+        console.error('Set enrollment fee error:', error);
+        res.status(500).json({ success: false, message: 'Server error while setting enrollment fee.' });
     }
 });
 

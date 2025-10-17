@@ -731,6 +731,18 @@ async function initializeDatabase() {
             )
         `;
 
+        const createEnrollmentFeesTable = `
+            CREATE TABLE IF NOT EXISTS enrollment_fees (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                branch_id VARCHAR(36) NOT NULL,
+                amount DECIMAL(10, 2) NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY (branch_id),
+                FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE
+            )
+        `;
+
         // Create tables in the correct order
         await connection.query(createUsersTable);
         console.log("Users table created");
@@ -1089,6 +1101,9 @@ async function initializeDatabase() {
         console.log("Student skills table created");
         await connection.query(createReportCardCommentsTable);
         console.log("Report card comments table created");
+
+        await connection.query(createEnrollmentFeesTable);
+        console.log("Enrollment fees table created");
 
         // Add exam_id to student_results if it doesn't exist
         try {
