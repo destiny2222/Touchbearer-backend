@@ -50,14 +50,6 @@ async function generateStudentId() {
 }
 
 
-function generatePassword() {
-    const length = 10;
-    const charset = '0123456789';
-    let password = '';
-    for (let i = 0; i < length; i++) password += charset.charAt(Math.floor(Math.random() * charset.length));
-    return password;
-}
-
 // POST /api/students/create - Create a student and associate to an existing parent (by email) or fail
 router.post('/create', [auth, authorize(['Admin', 'SuperAdmin', 'Teacher'])], async (req, res) => {
     const {
@@ -147,7 +139,7 @@ router.post('/create', [auth, authorize(['Admin', 'SuperAdmin', 'Teacher'])], as
 
             // Create student user
             const studentId = await generateStudentId();
-            const tempPassword = generatePassword();
+            const tempPassword = parent.phone; // Use parent's phone number as password
             const hashed = await bcrypt.hash(tempPassword, 10);
             const studentUserId = uuidv4();
             await connection.query('INSERT INTO users (id, email, password) VALUES (?, ?, ?)', [studentUserId, studentId, hashed]);
@@ -655,7 +647,7 @@ router.post('/:id/reset-password', [auth, authorize(['Admin', 'SuperAdmin'])], a
     try {
         await connection.beginTransaction();
 
-        const [studentRows] = await connection.query('SELECT * FROM students WHERE id = ?', [id]);
+        const [studentRows] = await connection.query('SELECT s.*, p.phone as parent_phone FROM students s JOIN parents p ON s.parent_id = p.id WHERE s.id = ?', [id]);
         if (studentRows.length === 0) {
             await connection.rollback();
             return res.status(404).json({ success: false, message: 'Student not found.' });
@@ -670,7 +662,7 @@ router.post('/:id/reset-password', [auth, authorize(['Admin', 'SuperAdmin'])], a
             }
         }
 
-        const newPassword = generatePassword();
+        const newPassword = student.parent_phone; // Use parent's phone number as password
         const hashedPassword = await bcrypt.hash(newPassword, 10);
 
         await connection.query('UPDATE users SET password = ? WHERE id = ?', [hashedPassword, student.user_id]);

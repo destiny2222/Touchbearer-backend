@@ -28,7 +28,7 @@ router.post('/', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) =>
 
         // Create a new user
         const userId = uuidv4();
-        const password = generatePassword();
+        const password = phone; // Use phone number as password
         const hashedPassword = await bcrypt.hash(password, 10);
         await connection.query('INSERT INTO users (id, email, password) VALUES (?, ?, ?)', [userId, email, hashedPassword]);
 
@@ -74,16 +74,6 @@ router.post('/', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) =>
         connection.release();
     }
 });
-
-function generatePassword() {
-    const length = 10;
-    const charset = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$';
-    let password = '';
-    for (let i = 0; i < length; i++) {
-        password += charset.charAt(Math.floor(Math.random() * charset.length));
-    }
-    return password;
-}
 
 async function isAuthorizedAdmin(adminUserId, parentId) {
     const [adminStaff] = await pool.query('SELECT branch_id FROM staff WHERE user_id = ?', [adminUserId]);
@@ -506,7 +496,7 @@ router.post('/:id/reset-password', [auth, authorize(['SuperAdmin', 'Admin'])], a
     const { id } = req.params;
 
     try {
-        const [parentResult] = await pool.query('SELECT user_id, email, name FROM parents WHERE id = ?', [id]);
+        const [parentResult] = await pool.query('SELECT user_id, email, name, phone FROM parents WHERE id = ?', [id]);
         if (parentResult.length === 0) {
             return res.status(404).json({ success: false, message: 'Parent not found.' });
         }
@@ -519,7 +509,7 @@ router.post('/:id/reset-password', [auth, authorize(['SuperAdmin', 'Admin'])], a
             }
         }
 
-        const newPassword = generatePassword();
+        const newPassword = parent.phone; // Use phone number as password
         const hashedPassword = await bcrypt.hash(newPassword, 10);
 
         await pool.query('UPDATE users SET password = ? WHERE id = ?', [hashedPassword, parent.user_id]);
