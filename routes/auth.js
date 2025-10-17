@@ -175,7 +175,7 @@ router.post('/login/staff', async (req, res) => {
             SELECT 
                 s.id, s.name, s.email, s.phone, s.address, s.gender,
                 s.description, s.status, s.image_url as imageUrl,
-                s.created_at as createdAt,
+                s.created_at as createdAt, s.permissions,
                 r.id as roleId, r.name as role,
                 b.id as branchId, b.school_name as branch
             FROM staff s
@@ -202,7 +202,10 @@ router.post('/login/staff', async (req, res) => {
         const staffDetails = staffResult[0];
 
         res.json({
-            staff: staffDetails,
+            staff: {
+                ...staffDetails,
+                permissions: staffDetails.permissions ? JSON.parse(staffDetails.permissions) : null
+            },
             token,
             message: 'Login successful'
         });
