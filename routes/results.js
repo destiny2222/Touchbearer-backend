@@ -732,6 +732,67 @@ router.post('/publish-all', [auth, authorize(['Admin', 'SuperAdmin'])], async (r
     }
 });
 
+// POST /api/results/term/:term_id/publish-all - Publish all results for a specific term
+router.post('/term/:term_id/publish-all', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => {
+    const { term_id } = req.params;
+    const connection = await pool.getConnection();
+    try {
+        await connection.beginTransaction();
+
+        // Get staff info for authorization
+        const staffInfo = await getStaffInfo(req.user.id);
+        if (!staffInfo && req.user.roles.includes('Admin')) {
+            await connection.rollback();
+            return res.status(403).json({ success: false, message: 'Staff record not found.' });
+        }
+
+        // Find the term
+        const [terms] = await connection.query('SELECT id, branch_id FROM terms WHERE id = ?', [term_id]);
+        if (terms.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ success: false, message: `Term not found.` });
+        }
+        const term_branch_id = terms[0].branch_id;
+
+        // Authorization check for Admin
+        if (req.user.roles.includes('Admin') && !req.user.roles.includes('SuperAdmin')) {
+            if (staffInfo.branch_id !== term_branch_id) {
+                await connection.rollback();
+                return res.status(403).json({
+                    success: false,
+                    message: 'Admins can only publish results for terms in their own branch.'
+                });
+            }
+        }
+
+        // Update all unpublished results for this term
+        const [updateResult] = await connection.query(
+            `UPDATE student_results 
+             SET published = TRUE, published_by = ?, published_at = NOW() 
+             WHERE term_id = ? AND published = FALSE`,
+            [req.user.id, term_id]
+        );
+
+        await connection.commit();
+
+        res.status(200).json({
+            success: true,
+            message: 'All results for the term published successfully.',
+            data: {
+                published_count: updateResult.affectedRows,
+                term_id
+            }
+        });
+
+    } catch (err) {
+        await connection.rollback();
+        console.error('Error publishing all term results:', err);
+        res.status(500).json({ success: false, message: 'Server error while publishing results.' });
+    } finally {
+        connection.release();
+    }
+});
+
 // GET /api/results - Get results with optional filters (session, term, class, arm)
 router.get('/', [auth, authorize(['Admin', 'SuperAdmin', 'Teacher'])], async (req, res) => {
     const { session, term, class: className, arm, published_only, class_id, subject_id, assessment_type } = req.query;
