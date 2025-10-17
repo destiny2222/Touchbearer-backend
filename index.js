@@ -26,7 +26,7 @@ app.use('/api/timetables', require('./routes/timetables'));
 app.use('/api/assignments', require('./routes/assignments'));
 app.use('/api/broadcasts', require('./routes/broadcasts'));
 app.use('/api/attendance', require('./routes/attendance'));
-app.use('/api/bookshop', require('./routes/bookshop'));
+app.use('/api/shop', require('./routes/shop'));
 app.use('/api/inventory', require('./routes/inventory'));
 app.use('/api/terms', require('./routes/terms'));
 app.use('/api/fees', require('./routes/fees'));

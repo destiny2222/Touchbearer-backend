@@ -538,34 +538,34 @@ async function initializeDatabase() {
             )
         `;
 
-        const createBooksTable = `
-            CREATE TABLE IF NOT EXISTS books (
+        const createShopItemsTable = `
+            CREATE TABLE IF NOT EXISTS shop_items (
                 id VARCHAR(36) PRIMARY KEY,
-                title VARCHAR(255) NOT NULL,
-                author VARCHAR(255) NOT NULL,
+                name VARCHAR(255) NOT NULL,
+                details VARCHAR(255),
                 description TEXT,
                 price DECIMAL(10, 2) NOT NULL,
-                cover_image_url VARCHAR(255),
-                amount INT NOT NULL DEFAULT 0,
+                stock INT NOT NULL DEFAULT 0,
                 branch_id VARCHAR(36) NOT NULL,
+                category VARCHAR(100),
+                image_url VARCHAR(500),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
                 FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE
             )
         `;
 
-        const createStudentBookPurchasesTable = `
-            CREATE TABLE IF NOT EXISTS student_book_purchases (
+        const createShopSalesTable = `
+            CREATE TABLE IF NOT EXISTS shop_sales (
                 id VARCHAR(36) PRIMARY KEY,
+                item_id VARCHAR(36) NOT NULL,
                 student_id VARCHAR(36) NOT NULL,
-                book_id VARCHAR(36) NOT NULL,
                 branch_id VARCHAR(36) NOT NULL,
                 price DECIMAL(10, 2) NOT NULL,
-                payment_status ENUM('Paid', 'Pending', 'Failed') NOT NULL,
-                purchase_method ENUM('Online', 'Cash') NOT NULL DEFAULT 'Online',
+                purchase_method ENUM('Online', 'Cash') NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (item_id) REFERENCES shop_items(id) ON DELETE CASCADE,
                 FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
-                FOREIGN KEY (book_id) REFERENCES books(id) ON DELETE CASCADE,
                 FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE
             )
         `;
@@ -1028,10 +1028,17 @@ async function initializeDatabase() {
         console.log("Staff attendance logs table created");
         await connection.query(createStudentAttendanceTable);
         console.log("Student attendance table created");
-        await connection.query(createBooksTable);
-        console.log("Books table created");
-        await connection.query(createStudentBookPurchasesTable);
-        console.log("Student book purchases table created");
+        
+        // Drop old bookshop tables if they exist
+        await connection.query('DROP TABLE IF EXISTS student_book_purchases');
+        await connection.query('DROP TABLE IF EXISTS books');
+        console.log("Old bookshop tables dropped.");
+
+        await connection.query(createShopItemsTable);
+        console.log("Shop items table created");
+        await connection.query(createShopSalesTable);
+        console.log("Shop sales table created");
+        
         await connection.query(createFeesTable);
         console.log("Fees table created");
 
