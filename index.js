@@ -38,6 +38,8 @@ app.use('/api/library', require('./routes/library'));
 app.use('/api/hospital', require('./routes/hospital'));
 app.use('/api/skills', require('./routes/skills'));
 app.use('/api/comments', require('./routes/comments'));
+app.use('/api/promote', require('./routes/promotion'));
+app.use('/api/graduation', require('./routes/graduation'));
 
 app.get('/', (req, res) => {
     res.json({ message: 'Hello World!' });

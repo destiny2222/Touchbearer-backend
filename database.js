@@ -239,6 +239,13 @@ async function initializeDatabase() {
             )
         `;
 
+        const createStudentStatusesTable = `
+            CREATE TABLE IF NOT EXISTS student_statuses (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                name VARCHAR(50) NOT NULL UNIQUE
+            )
+        `;
+
         const createStudentTable = `
             CREATE TABLE IF NOT EXISTS students (
                 id VARCHAR(36) PRIMARY KEY,
@@ -259,6 +266,7 @@ async function initializeDatabase() {
                 tribe VARCHAR(255),
                 class_id VARCHAR(36) NOT NULL,
                 branch_id VARCHAR(36) NOT NULL,
+                status_id INT DEFAULT 1,
                 previous_school VARCHAR(255),
                 previous_class VARCHAR(255),
                 last_term_result VARCHAR(255),
@@ -273,7 +281,8 @@ async function initializeDatabase() {
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
                 FOREIGN KEY (parent_id) REFERENCES parents(id) ON DELETE RESTRICT,
                 FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE,
-                FOREIGN KEY (class_id) REFERENCES classes(id) ON DELETE CASCADE
+                FOREIGN KEY (class_id) REFERENCES classes(id) ON DELETE CASCADE,
+                FOREIGN KEY (status_id) REFERENCES student_statuses(id)
             )
         `;
 
@@ -844,6 +853,9 @@ async function initializeDatabase() {
         await connection.query(createClassSubjectsTable);
         console.log("Class subjects table created");
 
+        await connection.query(createStudentStatusesTable);
+        console.log("Student statuses table created");
+
         await connection.query(createStudentTable);
         console.log("Students table created");
 
@@ -1096,6 +1108,23 @@ async function initializeDatabase() {
             console.log("Error updating student_results table:", error.message);
         }
 
+        // Add status_id to students if it doesn't exist
+        try {
+            const [studentCols] = await connection.query(`
+                SELECT COLUMN_NAME 
+                FROM INFORMATION_SCHEMA.COLUMNS 
+                WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'students'
+            `, [dbName]);
+            const existingStudentCols = studentCols.map(c => c.COLUMN_NAME);
+            if (!existingStudentCols.includes('status_id')) {
+                await connection.query('ALTER TABLE students ADD COLUMN status_id INT DEFAULT 1');
+                await connection.query('ALTER TABLE students ADD CONSTRAINT fk_status_id FOREIGN KEY (status_id) REFERENCES student_statuses(id)');
+                console.log("Added 'status_id' column and foreign key to students table");
+            }
+        } catch (error) {
+            console.log("Error updating students table for status_id:", error.message);
+        }
+
         // Add published fields to student_results if they don't exist
         try {
             const [resultColumns] = await connection.query(`
@@ -1143,6 +1172,12 @@ async function initializeDatabase() {
             await connection.query('INSERT IGNORE INTO roles (name) VALUES (?)', [role]);
         }
         console.log("Roles inserted");
+
+        const statuses = ['Active', 'Graduated', 'Suspended', 'Withdrawn'];
+        for (const status of statuses) {
+            await connection.query('INSERT IGNORE INTO student_statuses (name) VALUES (?)', [status]);
+        }
+        console.log("Student statuses inserted");
 
         // Seed SuperAdmin
         const superAdminEmail = 'gritindeveloper@gmail.com';

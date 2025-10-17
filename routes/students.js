@@ -413,12 +413,14 @@ router.get('/', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => 
             JOIN classes c ON s.class_id = c.id
             JOIN branches b ON s.branch_id = b.id
             JOIN parents p ON s.parent_id = p.id
+            LEFT JOIN student_statuses ss ON s.status_id = ss.id
+            WHERE (ss.name IS NULL OR ss.name = 'Active')
         `;
         const params = [];
         if (req.user.roles.includes('Admin')) {
             const adminBranchId = await getAdminBranchId(req.user.id);
             if (!adminBranchId) return res.json({ success: true, data: [] });
-            query += ' WHERE s.branch_id = ?';
+            query += ' AND s.branch_id = ?';
             params.push(adminBranchId);
         }
         query += ' ORDER BY s.first_name ASC, s.last_name ASC';
@@ -583,7 +585,8 @@ router.get('/class/:class_id', [auth, authorize(['Teacher', 'Admin', 'SuperAdmin
             LEFT JOIN parents p ON s.parent_id = p.id
             LEFT JOIN classes c ON s.class_id = c.id
             LEFT JOIN branches b ON s.branch_id = b.id
-            WHERE s.class_id = ?
+            LEFT JOIN student_statuses ss ON s.status_id = ss.id
+            WHERE s.class_id = ? AND (ss.name IS NULL OR ss.name = 'Active')
             ORDER BY s.last_name ASC, s.first_name ASC
         `;
 
@@ -630,7 +633,8 @@ router.get('/class', [auth, authorize(['Teacher'])], async (req, res) => {
                    s.previous_class, s.last_term_result, s.birth_certificate, s.medical_report
             FROM students s
             JOIN parents p ON s.parent_id = p.id
-            WHERE s.class_id = ?
+            LEFT JOIN student_statuses ss ON s.status_id = ss.id
+            WHERE s.class_id = ? AND (ss.name IS NULL OR ss.name = 'Active')
             ORDER BY s.last_name ASC, s.first_name ASC
         `;
 
