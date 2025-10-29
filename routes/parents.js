@@ -25,12 +25,10 @@ router.post(
     } = req.body;
 
     if (!name || !email || !phone) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "Name, email, and phone are required.",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "Name, email, and phone are required.",
+      });
     }
 
     const connection = await pool.getConnection();
@@ -44,12 +42,10 @@ router.post(
       );
       if (existingUser.length > 0) {
         await connection.rollback();
-        return res
-          .status(400)
-          .json({
-            success: false,
-            message: "A user with this email already exists.",
-          });
+        return res.status(400).json({
+          success: false,
+          message: "A user with this email already exists.",
+        });
       }
 
       // Create a new user
@@ -105,12 +101,10 @@ router.post(
     } catch (error) {
       await connection.rollback();
       console.error("Create parent error:", error);
-      res
-        .status(500)
-        .json({
-          success: false,
-          message: "Server error while creating parent.",
-        });
+      res.status(500).json({
+        success: false,
+        message: "Server error while creating parent.",
+      });
     } finally {
       connection.release();
     }
@@ -166,12 +160,10 @@ router.get(
           [req.user.id]
         );
         if (adminStaff.length === 0) {
-          return res
-            .status(403)
-            .json({
-              success: false,
-              message: "Admin not associated with a branch.",
-            });
+          return res.status(403).json({
+            success: false,
+            message: "Admin not associated with a branch.",
+          });
         }
         const adminBranchId = adminStaff[0].branch_id;
 
@@ -189,12 +181,10 @@ router.get(
       res.json({ success: true, data: parents });
     } catch (error) {
       console.error("Error fetching parents:", error);
-      res
-        .status(500)
-        .json({
-          success: false,
-          message: "Server error while fetching parents.",
-        });
+      res.status(500).json({
+        success: false,
+        message: "Server error while fetching parents.",
+      });
     }
   }
 );
@@ -296,12 +286,10 @@ router.get("/fees-summary", [auth, authorize(["Parent"])], async (req, res) => {
     res.json({ success: true, data: allFees });
   } catch (error) {
     console.error("Error fetching parent's fees summary:", error);
-    res
-      .status(500)
-      .json({
-        success: false,
-        message: "Server error while fetching payment information.",
-      });
+    res.status(500).json({
+      success: false,
+      message: "Server error while fetching payment information.",
+    });
   }
 });
 
@@ -322,18 +310,18 @@ router.get(
       }
       const parentId = parentRows[0].id;
 
-      // 2. Get all children associated with the parent, along with their class and branch info
+      // 2. Get all children associated with the parent
       const [children] = await pool.query(
         `
-            SELECT 
-                s.id, 
+            SELECT
+                s.id,
                 s.user_id,
                 CONCAT(s.first_name, ' ', s.last_name) as name,
                 s.class_id,
                 s.branch_id,
                 c.name as className
             FROM students s
-            JOIN classes c ON s.class_id = c.id
+            LEFT JOIN classes c ON s.class_id = c.id
             WHERE s.parent_id = ?
         `,
         [parentId]
@@ -343,87 +331,106 @@ router.get(
         return res.json({ success: true, data: [] });
       }
 
-      // 3. Get yesterday's date in YYYY-MM-DD format for the attendance query
+      // --- Optimization: Bulk fetch data for all children ---
+
+      const childIds = children.map((c) => c.id);
+      const classIds = [...new Set(children.map((c) => c.class_id))];
+      const userIds = children.map((c) => c.user_id);
+      const branchIds = [...new Set(children.map((c) => c.branch_id))];
+
+      // 3. Bulk fetch all necessary data in parallel
       const yesterday = new Date();
       yesterday.setDate(yesterday.getDate() - 1);
       const yesterdayStr = yesterday.toISOString().split("T")[0];
 
-      // 4. Fetch detailed information for each child
-      const wardsData = await Promise.all(
-        children.map(async (child) => {
-          // --- Fee Status ---
-          let fees = "Unpaid";
-          // Find the active term for the child's branch, falling back to a global term
-          const [branchTerm] = await pool.query(
-            "SELECT id FROM terms WHERE is_active = TRUE AND branch_id = ?",
-            [child.branch_id]
-          );
-          let activeTermId = null;
-          if (branchTerm.length > 0) {
-            activeTermId = branchTerm[0].id;
-          } else {
-            const [globalTerm] = await pool.query(
-              "SELECT id FROM terms WHERE is_active = TRUE AND branch_id IS NULL"
-            );
-            if (globalTerm.length > 0) activeTermId = globalTerm[0].id;
-          }
+      const [
+        [branchTerms],
+        [globalTermRows],
+        [missedWorkRows],
+        [attendanceRows],
+        [userRows],
+      ] = await Promise.all([
+        branchIds.length > 0
+          ? pool.query(
+              "SELECT id, branch_id FROM terms WHERE is_active = TRUE AND branch_id IN (?)",
+              [branchIds]
+            )
+          : Promise.resolve([[]]),
+        pool.query(
+          "SELECT id FROM terms WHERE is_active = TRUE AND branch_id IS NULL"
+        ),
+        classIds.length > 0
+          ? pool.query(
+              "SELECT class_id, COUNT(*) as count FROM assignments WHERE class_id IN (?) AND due_date < NOW() GROUP BY class_id",
+              [classIds]
+            )
+          : Promise.resolve([[]]),
+        childIds.length > 0
+          ? pool.query(
+              "SELECT student_id, status FROM student_attendance WHERE student_id IN (?) AND date = ?",
+              [childIds, yesterdayStr]
+            )
+          : Promise.resolve([[]]),
+        userIds.length > 0
+          ? pool.query("SELECT id, email FROM users WHERE id IN (?)", [userIds])
+          : Promise.resolve([[]]),
+      ]);
 
-          if (activeTermId) {
-            const [paymentStatus] = await pool.query(
-              "SELECT status FROM student_payment_statuses WHERE student_id = ? AND term_id = ?",
-              [child.id, activeTermId]
-            );
-            if (
-              paymentStatus.length > 0 &&
-              paymentStatus[0].status === "Paid"
-            ) {
-              fees = "Paid";
-            }
-          }
-
-          // --- Missed Work (Count of past-due assignments for the class) ---
-          const [missedWorkRows] = await pool.query(
-            "SELECT COUNT(*) as count FROM assignments WHERE class_id = ? AND due_date < NOW()",
-            [child.class_id]
-          );
-          const missedWork = missedWorkRows[0].count;
-
-          // --- Yesterday's Attendance ---
-          const [attendanceRows] = await pool.query(
-            "SELECT status FROM student_attendance WHERE student_id = ? AND date = ?",
-            [child.id, yesterdayStr]
-          );
-          const attendance =
-            attendanceRows.length > 0 ? attendanceRows[0].status : "N/A";
-
-          // --- Student Login ID ---
-          const [userRows] = await pool.query(
-            "SELECT email FROM users WHERE id = ?",
-            [child.user_id]
-          );
-          const studentLoginId =
-            userRows.length > 0 ? userRows[0].email : "N/A";
-
-          return {
-            name: child.name,
-            id: studentLoginId.toUpperCase(),
-            fees: fees,
-            missedWork: missedWork > 0 ? missedWork : "-",
-            className: child.className,
-            attendance: attendance,
-          };
-        })
+      // 4. Process fetched data into maps for efficient lookup
+      const globalTermId =
+        globalTermRows.length > 0 ? globalTermRows[0].id : null;
+      const activeTermMap = new Map(
+        branchTerms.map((term) => [term.branch_id, term.id])
       );
+      const missedWorkMap = new Map(
+        missedWorkRows.map((row) => [row.class_id, row.count])
+      );
+      const attendanceMap = new Map(
+        attendanceRows.map((row) => [row.student_id, row.status])
+      );
+      const usersMap = new Map(userRows.map((user) => [user.id, user.email]));
+
+      // Determine term IDs for the fee status query
+      const termIdsForQuery = children
+        .map((child) => activeTermMap.get(child.branch_id) || globalTermId)
+        .filter((id) => id);
+
+      // Fetch fee statuses based on the determined terms
+      const [paymentStatusRows] =
+        termIdsForQuery.length > 0
+          ? await pool.query(
+              "SELECT student_id, status FROM student_payment_statuses WHERE student_id IN (?) AND term_id IN (?) AND status = 'Paid'",
+              [childIds, [...new Set(termIdsForQuery)]] // Use Set to get unique term IDs
+            )
+          : [[]];
+      const feesMap = new Map(
+        paymentStatusRows.map((p) => [p.student_id, p.status])
+      );
+
+      // 5. Map the bulk data back to each child
+      const wardsData = children.map((child) => {
+        const studentLoginId = usersMap.get(child.user_id) || "N/A";
+        const fees = feesMap.get(child.id) || "Unpaid";
+        const missedWork = missedWorkMap.get(child.class_id) || 0;
+        const attendance = attendanceMap.get(child.id) || "N/A";
+
+        return {
+          name: child.name,
+          id: studentLoginId.toUpperCase(),
+          fees: fees,
+          missedWork: missedWork > 0 ? missedWork : "-",
+          className: child.className,
+          attendance: attendance,
+        };
+      });
 
       res.json({ success: true, data: wardsData });
     } catch (error) {
       console.error("Error fetching parent's wards summary:", error);
-      res
-        .status(500)
-        .json({
-          success: false,
-          message: "Server error while fetching your children's data.",
-        });
+      res.status(500).json({
+        success: false,
+        message: "Server error while fetching your children's data.",
+      });
     }
   }
 );
@@ -550,12 +557,10 @@ router.get(
       res.json({ success: true, data: resultsData });
     } catch (err) {
       console.error("Error fetching children exam results:", err);
-      res
-        .status(500)
-        .json({
-          success: false,
-          message: "Server error while fetching exam results.",
-        });
+      res.status(500).json({
+        success: false,
+        message: "Server error while fetching exam results.",
+      });
     }
   }
 );
@@ -580,12 +585,10 @@ router.get(
       if (req.user.roles.includes("Admin")) {
         const isAuthorized = await isAuthorizedAdmin(req.user.id, id);
         if (!isAuthorized) {
-          return res
-            .status(403)
-            .json({
-              success: false,
-              message: "You are not authorized to view this parent.",
-            });
+          return res.status(403).json({
+            success: false,
+            message: "You are not authorized to view this parent.",
+          });
         }
       }
 
@@ -603,12 +606,10 @@ router.get(
       res.json({ success: true, data: parent });
     } catch (error) {
       console.error("Error fetching parent:", error);
-      res
-        .status(500)
-        .json({
-          success: false,
-          message: "Server error while fetching parent details.",
-        });
+      res.status(500).json({
+        success: false,
+        message: "Server error while fetching parent details.",
+      });
     }
   }
 );
@@ -648,12 +649,10 @@ router.put(
         const isAuthorized = await isAuthorizedAdmin(req.user.id, id);
         if (!isAuthorized) {
           await connection.rollback();
-          return res
-            .status(403)
-            .json({
-              success: false,
-              message: "You are not authorized to update this parent.",
-            });
+          return res.status(403).json({
+            success: false,
+            message: "You are not authorized to update this parent.",
+          });
         }
       }
 
@@ -701,12 +700,10 @@ router.put(
     } catch (error) {
       await connection.rollback();
       console.error("Error updating parent:", error);
-      res
-        .status(500)
-        .json({
-          success: false,
-          message: "Server error while updating parent details.",
-        });
+      res.status(500).json({
+        success: false,
+        message: "Server error while updating parent details.",
+      });
     } finally {
       connection.release();
     }
@@ -734,24 +731,19 @@ router.post(
       if (req.user.roles.includes("Admin")) {
         const isAuthorized = await isAuthorizedAdmin(req.user.id, id);
         if (!isAuthorized) {
-          return res
-            .status(403)
-            .json({
-              success: false,
-              message:
-                "You are not authorized to reset this parent's password.",
-            });
+          return res.status(403).json({
+            success: false,
+            message: "You are not authorized to reset this parent's password.",
+          });
         }
       }
 
       const newPassword = parent.phone; // Use phone number as password
       if (!newPassword) {
-        return res
-          .status(400)
-          .json({
-            success: false,
-            message: "Parent phone number not found, cannot reset password.",
-          });
+        return res.status(400).json({
+          success: false,
+          message: "Parent phone number not found, cannot reset password.",
+        });
       }
       const hashedPassword = await bcrypt.hash(newPassword, 10);
 
@@ -772,12 +764,10 @@ router.post(
       });
     } catch (error) {
       console.error("Error resetting parent password:", error);
-      res
-        .status(500)
-        .json({
-          success: false,
-          message: "Server error while resetting password.",
-        });
+      res.status(500).json({
+        success: false,
+        message: "Server error while resetting password.",
+      });
     }
   }
 );
@@ -808,13 +798,11 @@ router.delete("/:id", [auth, authorize(["SuperAdmin"])], async (req, res) => {
 
     if (childrenCheck[0].total_children > 0) {
       await connection.rollback();
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message:
-            "Cannot delete a parent who has children associated with their account.",
-        });
+      return res.status(400).json({
+        success: false,
+        message:
+          "Cannot delete a parent who has children associated with their account.",
+      });
     }
 
     await connection.query("DELETE FROM parents WHERE id = ?", [id]);
