@@ -90,11 +90,17 @@ router.post(
 
       await connection.commit();
 
+      // Fetch the full parent details to return
+      const [createdParent] = await connection.query(
+        "SELECT id, user_id, name, phone, email, dob, residential_address, occupation, workplace_address, created_at FROM parents WHERE id = ?",
+        [parentId]
+      );
+
       res.status(201).json({
         success: true,
         message: "Parent created successfully.",
         data: {
-          ...newParent,
+          ...createdParent[0],
           temporaryPassword: password ? null : finalPassword,
         },
       });
