@@ -90,11 +90,17 @@ router.post(
 
       await connection.commit();
 
+      // Fetch the full parent details to return
+      const [createdParent] = await connection.query(
+        "SELECT id, user_id, name, phone, email, dob, residential_address, occupation, workplace_address, created_at FROM parents WHERE id = ?",
+        [parentId]
+      );
+
       res.status(201).json({
         success: true,
         message: "Parent created successfully.",
         data: {
-          ...newParent,
+          ...createdParent[0],
           temporaryPassword: password ? null : finalPassword,
         },
       });
@@ -147,14 +153,19 @@ router.get(
   [auth, authorize(["SuperAdmin", "Admin"])],
   async (req, res) => {
     try {
-      let query = `
-            SELECT DISTINCT p.id, p.name, p.email, p.phone, u.created_at
-            FROM parents p
-            JOIN users u ON p.user_id = u.id
-        `;
-      const queryParams = [];
+      let query;
+      let queryParams = [];
 
-      if (req.user.roles.includes("Admin")) {
+      if (req.user.roles.includes("SuperAdmin")) {
+        // SuperAdmin sees all parents
+        query = `
+          SELECT DISTINCT p.id, p.name, p.email, p.phone, u.created_at
+          FROM parents p
+          JOIN users u ON p.user_id = u.id
+          ORDER BY u.created_at DESC
+        `;
+      } else if (req.user.roles.includes("Admin")) {
+        // Admin sees all parents (including those without children)
         const [adminStaff] = await pool.query(
           "SELECT branch_id FROM staff WHERE user_id = ?",
           [req.user.id]
@@ -165,17 +176,16 @@ router.get(
             message: "Admin not associated with a branch.",
           });
         }
-        const adminBranchId = adminStaff[0].branch_id;
 
-        query += `
-                LEFT JOIN new_students ns ON p.id = ns.parent_id
-                LEFT JOIN students s ON p.id = s.parent_id
-                WHERE ns.branch_id = ? OR s.branch_id = ?
-            `;
-        queryParams.push(adminBranchId, adminBranchId);
+        // Admin can see all parents in the system
+        query = `
+          SELECT DISTINCT p.id, p.name, p.email, p.phone, u.created_at
+          FROM parents p
+          JOIN users u ON p.user_id = u.id
+          ORDER BY u.created_at DESC
+        `;
+        queryParams = [];
       }
-
-      query += " ORDER BY u.created_at DESC";
 
       const [parents] = await pool.query(query, queryParams);
       res.json({ success: true, data: parents });
