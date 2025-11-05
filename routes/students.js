@@ -15,7 +15,7 @@ async function getAdminBranchId(userId) {
 }
 
 async function getTeacherClasses(userId) {
-  // Get teacher's staff record
+  // Get teacher's staff record  
   const [staffRows] = await pool.query(
     "SELECT id, class_id, branch_id FROM staff WHERE user_id = ?",
     [userId]
