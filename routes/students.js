@@ -44,6 +44,14 @@ async function getTeacherClasses(userId) {
   return { classIds, branchId: staff.branch_id };
 }
 
+async function isSubjectTeacher4Class(teacherId, classId) {
+  const [rows] = await pool.query(
+    "SELECT * FROM class_subjects WHERE teacher_id = ? AND class_id = ?",
+    [teacherId, classId]
+  );
+  return rows.length > 0;
+}
+
 async function generateStudentId(branch_id) {
   const [branch] = await pool.query(
     "SELECT site_name FROM branches WHERE id = ?",
@@ -831,9 +839,20 @@ router.get(
         !req.user.roles.includes("Admin") &&
         !req.user.roles.includes("SuperAdmin")
       ) {
-        const { classIds } = await getTeacherClasses(req.user.id);
+        const [staff] = await pool.query(
+          "SELECT id FROM staff WHERE user_id = ?",
+          [req.user.id]
+        );
+        if (staff.length === 0) {
+          return res.status(403).json({
+            success: false,
+            message: "Authenticated user is not a staff member.",
+          });
+        }
+        const teacherId = staff[0].id;
+        const SubjectTeacher4Class = await isSubjectTeacher4Class(teacherId, class_id);
 
-        if (!classIds.includes(class_id)) {
+        if (!SubjectTeacher4Class) {
           return res.status(403).json({
             success: false,
             message:
