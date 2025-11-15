@@ -24,6 +24,14 @@ async function canTeacherManageSubject(teacherStaffId, subjectId) {
   return rows.length > 0;
 }
 
+async function isSubjectTeacher4Class(teacherId, classId) {
+    const [rows] = await pool.query(
+      "SELECT id FROM class_subjects WHERE teacher_id = ? AND class_id = ?",
+      [teacherId, classId]
+    );
+    return rows.length > 0;
+  }
+
 // Helper function to format ordinal numbers (1st, 2nd, 3rd)
 function getOrdinal(n) {
   if (n == null) return "";
@@ -55,11 +63,11 @@ router.post(
     }
 
     // Validate assessment_type
-    const validAssessmentTypes = ["ca1", "ca2", "ca3", "exam"];
+    const validAssessmentTypes = ["ca1", "ca2", "ca3", "ca4", "exam"];
     if (!validAssessmentTypes.includes(assessment_type)) {
       return res.status(400).json({
         success: false,
-        message: "Invalid assessment_type. Must be one of: ca1, ca2, ca3, exam",
+        message: "Invalid assessment_type. Must be one of: ca1, ca2, ca3, ca4, exam",
       });
     }
 
@@ -271,7 +279,7 @@ router.post(
 );
 
 // GET /api/results/class/:class_id/subject/:subject_id - Get results for a class and subject, including students without scores
-// Requires query param: assessment_type (ca1, ca2, ca3, exam)
+// Requires query param: assessment_type (ca1, ca2, ca3, 'ca4', exam)
 router.get(
   "/class/:class_id/subject/:subject_id",
   [auth, authorize(["Teacher", "Admin", "SuperAdmin"])],
@@ -286,11 +294,11 @@ router.get(
       });
     }
 
-    const validTypes = ["ca1", "ca2", "ca3", "exam"];
+    const validTypes = ["ca1", "ca2", "ca3", "c4", "exam"];
     if (!validTypes.includes(assessment_type)) {
       return res.status(400).json({
         success: false,
-        message: "Invalid assessment_type. Must be one of: ca1, ca2, ca3, exam",
+        message: "Invalid assessment_type. Must be one of: ca1, ca2, ca3, ca4, exam",
       });
     }
 
@@ -1304,12 +1312,12 @@ router.get(
           "SELECT id FROM classes WHERE teacher_id = ?",
           [staffInfo.id]
         );
-        if (!teacherClasses.map((c) => c.id).includes(studentData.class_id)) {
-          return res.status(403).json({
-            success: false,
-            message: "You can only view results for students in your classes.",
-          });
-        }
+        // if (!teacherClasses.map((c) => c.id).includes(studentData.class_id)) {
+        //   return res.status(403).json({
+        //     success: false,
+        //     message: "You can only view results for students in your classes.",
+        //   });
+        // }
       }
       if (
         req.user.roles.includes("Admin") &&

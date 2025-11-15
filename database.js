@@ -352,7 +352,7 @@ async function initializeDatabase() {
                 id VARCHAR(36) PRIMARY KEY,
                 title VARCHAR(255) NOT NULL,
                 exam_type ENUM('Internal', 'External') NOT NULL,
-                assessment_type ENUM('ca1', 'ca2', 'ca3', 'exam') NOT NULL,
+                assessment_type ENUM('ca1', 'ca2', 'ca3', 'ca4', 'exam') NOT NULL,
                 subject_type ENUM('Multi-Subject', 'Single-Subject') NOT NULL,
                 class_subject_id VARCHAR(36),
                 class_id VARCHAR(36),
@@ -680,7 +680,7 @@ async function initializeDatabase() {
                 class_id VARCHAR(36) NOT NULL,
                 subject_id VARCHAR(36) NOT NULL,
                 term_id VARCHAR(36),
-                assessment_type ENUM('ca1', 'ca2', 'ca3', 'exam') NOT NULL,
+                assessment_type ENUM('ca1', 'ca2', 'ca3', 'ca4', 'exam') NOT NULL,
                 score DECIMAL(5, 2) NOT NULL,
                 teacher_id VARCHAR(36) NOT NULL,
                 branch_id VARCHAR(36) NOT NULL,
@@ -1083,7 +1083,7 @@ async function initializeDatabase() {
       }
       if (!existingExamCols.includes("assessment_type")) {
         await connection.query(
-          "ALTER TABLE exams ADD COLUMN assessment_type ENUM('ca1', 'ca2', 'ca3', 'exam') NOT NULL AFTER exam_type"
+          "ALTER TABLE exams ADD COLUMN assessment_type ENUM('ca1', 'ca2', 'ca3', 'ca4', 'exam') NOT NULL AFTER exam_type"
         );
         console.log("Added 'assessment_type' column to exams table");
       }
