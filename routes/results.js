@@ -523,8 +523,10 @@ router.get(
           (subject) => {
             const ca1 = subject.ca1 || 0;
             const ca2 = subject.ca2 || 0;
+            const ca3 = subject.ca3 || 0;
+            const ca4 = subject.ca4 || 0;
             const exam = subject.exam || 0;
-            subject.total = ca1 + ca2 + exam;
+            subject.total = ca1 + ca2 + ca3 + ca4 + exam;
             studentTotalScore += subject.total;
           }
         );
@@ -573,6 +575,8 @@ router.get(
           subject: subject.name,
           ca1: studentSubjectData.ca1 || 0,
           ca2: studentSubjectData.ca2 || 0,
+          ca3: studentSubjectData.ca3 || 0,
+          ca4: studentSubjectData.ca4 || 0,
           exam: studentSubjectData.exam || 0,
           total: studentTotal,
           grade: grade,
@@ -1421,8 +1425,10 @@ router.get(
           (subject) => {
             const ca1 = subject.ca1 || 0;
             const ca2 = subject.ca2 || 0;
+            const ca3 = subject.ca3 || 0;
+            const ca4 = subject.ca4 || 0;
             const exam = subject.exam || 0;
-            subject.total = ca1 + ca2 + exam;
+            subject.total = ca1 + ca2 + + ca3 + ca4 + exam;
             studentTotalScore += subject.total;
           }
         );
@@ -1474,6 +1480,8 @@ router.get(
           subject: subject.name,
           ca1: studentSubjectData.ca1 || 0,
           ca2: studentSubjectData.ca2 || 0,
+          ca3: studentSubjectData.ca3 || 0,
+          ca4: studentSubjectData.ca4 || 0,
           exam: studentSubjectData.exam || 0,
           total: studentTotal,
           grade: grade,
