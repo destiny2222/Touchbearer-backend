@@ -1087,14 +1087,14 @@ async function initializeDatabase() {
         );
         console.log("Added 'assessment_type' column to exams table");
       }
-      // adding ca4
-          await connection.query(
-                "ALTER TABLE exams MODIFY COLUMN assessment_type ENUM('ca1', 'ca2', 'ca3', 'ca4', 'exam') NOT NULL"
-          );
+      // // adding ca4
+      //     await connection.query(
+      //           "ALTER TABLE exams MODIFY COLUMN assessment_type ENUM('ca1', 'ca2', 'ca3', 'ca4', 'exam') NOT NULL"
+      //     );
 
-          await connection.query(
-                "ALTER TABLE student_results MODIFY COLUMN assessment_type ENUM('ca1', 'ca2', 'ca3', 'ca4', 'exam') NOT NULL"
-          );
+      //     await connection.query(
+      //           "ALTER TABLE student_results MODIFY COLUMN assessment_type ENUM('ca1', 'ca2', 'ca3', 'ca4', 'exam') NOT NULL"
+      //     );
       if (existingExamCols.includes("duration_hours")) {
         await connection.query(
           "ALTER TABLE exams CHANGE COLUMN duration_hours duration_minutes INT NOT NULL"

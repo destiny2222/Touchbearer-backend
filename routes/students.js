@@ -631,7 +631,7 @@ router.get(
   async (req, res) => {
     try {
       let query = `
-            SELECT s.id, u.email as student_id, s.first_name, s.last_name, s.dob, s.address, s.nationality, s.state, s.religion, s.disability, s.passport, c.name AS class_name, b.school_name AS branch,
+            SELECT s.id, u.email as student_id, s.first_name, s.last_name, s.dob, s.address, s.nationality, s.state, s.religion, s.disability, s.passport, c.name AS class_name, b.school_name AS branch, b.address AS branch_address,
                    p.name AS parent_name, p.email AS parent_email, p.phone AS parent_phone,
                    s.previous_class, s.last_term_result, s.birth_certificate, s.medical_report
             FROM students s
@@ -671,7 +671,7 @@ router.get(
       let query = `
             SELECT 
                 ns.id, ns.student_id, ns.first_name, ns.last_name, ns.dob, ns.address, ns.nationality, ns.state, ns.religion, ns.disability, ns.passport, c.name as class_applying,
-                ns.payment_status, b.school_name as branch_name, p.name as parent_name, p.phone as parent_phone
+                ns.payment_status, b.school_name as branch_name, b.address AS branch_address, p.name as parent_name, p.phone as parent_phone
             FROM new_students ns
             JOIN branches b ON ns.branch_id = b.id
             JOIN parents p ON ns.parent_id = p.id
