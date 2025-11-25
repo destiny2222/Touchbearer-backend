@@ -23,12 +23,17 @@ router.post('/store', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, re
         class_id,
         dateTime,
         duration_minutes,
-        subjects // Now an array of { class_subject_id, questions: [...] }
+        subjects // Array of { class_subject_id, questions: [...] }
     } = req.body;
 
-    // Basic validation
-    if (!examType || !assessment_type || !subjectType || !title || !class_id || !dateTime || !duration_minutes || !subjects || !Array.isArray(subjects) || subjects.length === 0) {
+    // 1. Basic Validation
+    if (!examType || !subjectType || !title || !class_id || !dateTime || !duration_minutes || !subjects || !Array.isArray(subjects) || subjects.length === 0) {
         return res.status(400).json({ success: false, message: 'Please provide all required fields, including at least one subject with questions.' });
+    }
+
+    // Validate assessment type only for Internal exams
+    if (examType === 'Internal' && !assessment_type) {
+        return res.status(400).json({ success: false, message: 'Assessment type is required for Internal exams.' });
     }
 
     // Ensure every subject has questions
@@ -45,36 +50,76 @@ router.post('/store', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, re
     try {
         await connection.beginTransaction();
 
+        // 2. Format Date for MySQL (Handle ISO string "T" removal)
+        const formattedDateTime = new Date(dateTime).toISOString().slice(0, 19).replace('T', ' ');
+
+        // 3. Verify Admin Branch Permissions
         const [adminStaff] = await connection.query('SELECT branch_id FROM staff WHERE user_id = ?', [req.user.id]);
-        if (req.user.roles.includes('Admin') && adminStaff.length === 0) {
+        if (req.user.roles.includes('Admin') && (!adminStaff.length || !adminStaff[0].branch_id)) {
             await connection.rollback();
             return res.status(403).json({ success: false, message: 'Admin not associated with a branch.' });
         }
         const branch_id = adminStaff[0].branch_id;
 
+        // 4. Validate Class existence
         const [classInfo] = await connection.query('SELECT id FROM classes WHERE id = ? AND branch_id = ?', [class_id, branch_id]);
         if (classInfo.length === 0) {
             await connection.rollback();
             return res.status(400).json({ success: false, message: 'Class not found for the given branch.' });
         }
 
-        // Validate all subject IDs
+        // 5. SMART SUBJECT RESOLUTION logic
+        // We create a new array "validatedSubjects" with corrected IDs
+        const validatedSubjects = [];
+
         for (const subject of subjects) {
-            const [subjectCheck] = await connection.query('SELECT class_id FROM class_subjects WHERE id = ?', [subject.class_subject_id]);
+            const incomingId = subject.class_subject_id;
+
+            // Fetch details of the incoming subject ID
+            const [subjectCheck] = await connection.query('SELECT id, name, class_id FROM class_subjects WHERE id = ?', [incomingId]);
+
             if (subjectCheck.length === 0) {
                 await connection.rollback();
-                return res.status(400).json({ success: false, message: `Invalid class_subject_id: ${subject.class_subject_id}` });
+                return res.status(400).json({ success: false, message: `Invalid class_subject_id: ${incomingId}` });
             }
-            if (subjectCheck[0].class_id !== class_id) {
-                await connection.rollback();
-                return res.status(400).json({ success: false, message: `Subject ${subject.class_subject_id} does not belong to the specified class.` });
+
+            const subjectData = subjectCheck[0];
+            let finalSubjectId = incomingId;
+
+            // If the subject ID belongs to a different class (Frontend Loop Issue), find the matching subject in the CURRENT class
+            if (subjectData.class_id !== class_id) {
+                const [matchingSubject] = await connection.query(
+                    'SELECT id FROM class_subjects WHERE class_id = ? AND name = ?', 
+                    [class_id, subjectData.name]
+                );
+
+                if (matchingSubject.length > 0) {
+                    finalSubjectId = matchingSubject[0].id; // Swap to the correct ID
+                } else {
+                    await connection.rollback();
+                    return res.status(400).json({ 
+                        success: false, 
+                        message: `Subject '${subjectData.name}' exists in the source class but was not found in the target class (ID: ${class_id}). Please ensure subjects are synced.` 
+                    });
+                }
             }
+
+            validatedSubjects.push({
+                ...subject,
+                class_subject_id: finalSubjectId // Use the corrected ID
+            });
         }
 
-        // Check for scheduling conflicts
-        const newExamStartTime = new Date(dateTime);
+        // 6. Check for scheduling conflicts
+        // We check a window around the new exam time to be safe
+        const newExamStartTime = new Date(formattedDateTime);
         const newExamEndTime = new Date(newExamStartTime.getTime() + duration_minutes * 60 * 1000);
-        const [existingExams] = await connection.query('SELECT exam_date_time, duration_minutes FROM exams WHERE class_id = ?', [class_id]);
+        
+        const [existingExams] = await connection.query(
+            'SELECT exam_date_time, duration_minutes FROM exams WHERE class_id = ? AND exam_date_time BETWEEN ? AND ?', 
+            [class_id, new Date(newExamStartTime.getTime() - 86400000), new Date(newExamEndTime.getTime() + 86400000)]
+        );
+
         for (const existingExam of existingExams) {
             const existingExamStartTime = new Date(existingExam.exam_date_time);
             const existingExamEndTime = new Date(existingExamStartTime.getTime() + existingExam.duration_minutes * 60 * 1000);
@@ -84,37 +129,47 @@ router.post('/store', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, re
             }
         }
 
+        // 7. Insert Exam
+        const newExamId = uuidv4();
         const newExam = {
-            id: uuidv4(),
+            id: newExamId,
             title,
             exam_type: examType,
-            assessment_type,
+            assessment_type: examType === 'External' ? null : assessment_type,
             subject_type: subjectType,
-            class_subject_id: subjectType === 'Single-Subject' ? subjects[0].class_subject_id : null,
+            class_subject_id: subjectType === 'Single-Subject' ? validatedSubjects[0].class_subject_id : null,
             class_id,
             branch_id,
-            exam_date_time: dateTime,
+            exam_date_time: formattedDateTime,
             duration_minutes,
             created_by: req.user.id
         };
         await connection.query('INSERT INTO exams SET ?', newExam);
 
-        for (const subject of subjects) {
+        // 8. Insert Questions (Using the Validated Subject IDs)
+        for (const subject of validatedSubjects) {
+            const questionValues = [];
             for (const question of subject.questions) {
-                const newQuestion = {
-                    id: uuidv4(),
-                    exam_id: newExam.id,
-                    class_subject_id: subject.class_subject_id,
-                    question_text: question.text,
-                    options: JSON.stringify(question.options),
-                    correct_answer_index: question.correctAnswerIndex
-                };
-                await connection.query('INSERT INTO questions SET ?', newQuestion);
+                questionValues.push([
+                    uuidv4(),
+                    newExamId,
+                    subject.class_subject_id, // Corrected ID
+                    question.text,
+                    JSON.stringify(question.options),
+                    question.correctAnswerIndex
+                ]);
+            }
+            
+            if (questionValues.length > 0) {
+                await connection.query(
+                    'INSERT INTO questions (id, exam_id, class_subject_id, question_text, options, correct_answer_index) VALUES ?',
+                    [questionValues]
+                );
             }
         }
 
         await connection.commit();
-        console.log('Exam created successfully.');
+        console.log(`Exam created successfully for class ${class_id}`);
         res.status(201).json({ success: true, message: 'Exam created successfully.', data: newExam });
 
     } catch (err) {
