@@ -179,4 +179,81 @@ router.get('/current', auth, async (req, res) => {
     }
 });
 
+
+// PUT /api/terms/:id - Update a term
+router.put('/:id', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => {
+    const { id } = req.params;
+    const { name, session, start_date, end_date, next_term_begins, is_active } = req.body;
+
+    // Basic validation
+    if (!name && !session && !start_date && !end_date && !next_term_begins && is_active === undefined) {
+        return res.status(400).json({ success: false, message: 'No fields to update provided.' });
+    }
+
+    const connection = await pool.getConnection();
+
+    try {
+        await connection.beginTransaction();
+
+        // Fetch the existing term
+        const [terms] = await connection.query('SELECT * FROM terms WHERE id = ?', [id]);
+        if (terms.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ success: false, message: 'Term not found.' });
+        }
+        const term = terms[0];
+
+        // Authorization check for Admin
+        if (req.user.roles.includes('Admin')) {
+            const adminBranchId = await getAdminBranchId(req.user.id);
+            if (term.branch_id !== adminBranchId) {
+                await connection.rollback();
+                return res.status(403).json({ success: false, message: 'Admins can only edit terms for their own branch.' });
+            }
+        }
+        
+        // If is_active is being set to true, deactivate other terms in the same branch/scope
+        if (is_active === true) {
+            if (term.branch_id) {
+                await connection.query('UPDATE terms SET is_active = FALSE WHERE branch_id = ? AND id != ?', [term.branch_id, id]);
+            } else {
+                await connection.query('UPDATE terms SET is_active = FALSE WHERE branch_id IS NULL AND id != ?', [id]);
+            }
+        }
+
+
+        // Build the update query
+        const fieldsToUpdate = {};
+        if (name) fieldsToUpdate.name = name;
+        if (session) fieldsToUpdate.session = session;
+        if (start_date) fieldsToUpdate.start_date = start_date;
+        if (end_date) fieldsToUpdate.end_date = end_date;
+        if (next_term_begins) fieldsToUpdate.next_term_begins = next_term_begins;
+        if (is_active !== undefined) fieldsToUpdate.is_active = is_active;
+
+
+        if (Object.keys(fieldsToUpdate).length === 0) {
+             await connection.rollback();
+            return res.status(400).json({ success: false, message: 'No valid fields to update provided.' });
+        }
+
+
+        await connection.query('UPDATE terms SET ? WHERE id = ?', [fieldsToUpdate, id]);
+
+        await connection.commit();
+
+        // Fetch the updated term to return
+        const [updatedTerms] = await pool.query('SELECT * FROM terms WHERE id = ?', [id]);
+
+        res.json({ success: true, message: 'Term updated successfully.', data: updatedTerms[0] });
+
+    } catch (error) {
+        await connection.rollback();
+        console.error('Update term error:', error);
+        res.status(500).json({ success: false, message: 'Server error while updating term.' });
+    } finally {
+        connection.release();
+    }
+});
+
 module.exports = router;
