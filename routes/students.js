@@ -877,7 +877,7 @@ router.get(
       // Fetch students in that class
       const query = `
             SELECT 
-                s.id, s.student_id, s.user_id, s.first_name, s.last_name, s.surname_name, s.other_names,
+                s.id, u.email as student_id, s.user_id, s.first_name, s.last_name, s.surname_name, s.other_names,
                 s.gender, s.dob, s.address, s.nationality, s.state, s.religion, 
                 s.disability, s.passport, s.blood_group, s.genotype, s.allergies,
                 s.previous_class, s.last_term_result, s.birth_certificate, s.medical_report,
@@ -885,6 +885,7 @@ router.get(
                 c.name AS class_name, b.school_name AS branch_name
             FROM students s
             LEFT JOIN parents p ON s.parent_id = p.id
+            JOIN users u ON s.user_id = u.id
             LEFT JOIN classes c ON s.class_id = c.id
             LEFT JOIN branches b ON s.branch_id = b.id
             LEFT JOIN student_statuses ss ON s.status_id = ss.id
