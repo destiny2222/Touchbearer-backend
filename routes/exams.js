@@ -416,109 +416,100 @@ router.get('/upcoming', async (req, res) => {
 
 
 // @route   GET /api/exams/me/upcoming
-// @desc    Get upcoming exams for the authenticated user (student, parent, or teacher)
-// @access  Private (Student, NewStudent, Parent, Teacher)
+// @desc    Get exams that are active or past, BUT NOT taken yet
 router.get('/me/upcoming', auth, authorize(['Student', 'NewStudent', 'Parent', 'Teacher']), async (req, res) => {
     const { id: userId, roles } = req.user;
     const connection = await pool.getConnection();
 
     try {
+        // 1. Get the Student's details (Class ID)
+        let dbStudentId = null; // This is the ID used in the exam_results table
         const classIds = new Set();
 
-        if (roles.includes('Teacher')) {
-            const [staff] = await connection.query('SELECT id FROM staff WHERE user_id = ?', [userId]);
-            if (staff.length > 0) {
-                const teacherId = staff[0].id;
-                const [classes] = await connection.query('SELECT id FROM classes WHERE teacher_id = ?', [teacherId]);
-                classes.forEach(c => classIds.add(c.id));
-            }
-        }
-
-        if (roles.includes('Parent')) {
-            const [parents] = await connection.query('SELECT id FROM parents WHERE user_id = ?', [userId]);
-            if (parents.length > 0) {
-                const parentId = parents[0].id;
-                const [studentClasses] = await connection.query('SELECT class_id FROM students WHERE parent_id = ?', [parentId]);
-                studentClasses.forEach(c => c.class_id && classIds.add(c.class_id));
-
-                const [newStudentClasses] = await connection.query('SELECT class_id FROM new_students WHERE parent_id = ?', [parentId]);
-                newStudentClasses.forEach(c => c.class_id && classIds.add(c.class_id));
-            }
-        }
-
         if (roles.includes('Student')) {
-            const [students] = await connection.query('SELECT class_id FROM students WHERE user_id = ?', [userId]);
-            if (students.length > 0 && students[0].class_id) {
-                classIds.add(students[0].class_id);
+            const [students] = await connection.query('SELECT id, class_id FROM students WHERE user_id = ?', [userId]);
+            if (students.length > 0) {
+                dbStudentId = students[0].id; // Use the Student Profile ID
+                if (students[0].class_id) classIds.add(students[0].class_id);
             }
-        }
-
-        if (roles.includes('NewStudent')) {
+        } else if (roles.includes('NewStudent')) {
+            // For new students, we might use the user_id or email depending on your setup
+            // Assuming NewStudent results are tracked by user_id directly:
+            dbStudentId = userId; 
+            
             const [users] = await connection.query('SELECT email FROM users WHERE id = ?', [userId]);
             if (users.length > 0) {
-                const studentId = users[0].email;
-                const [newStudents] = await connection.query('SELECT class_id FROM new_students WHERE student_id = ?', [studentId]);
-                if (newStudents.length > 0 && newStudents[0].class_id) {
-                    classIds.add(newStudents[0].class_id);
-                }
+                const [newStudents] = await connection.query('SELECT class_id FROM new_students WHERE student_id = ?', [users[0].email]);
+                if (newStudents.length > 0) classIds.add(newStudents[0].class_id);
             }
         }
 
         const uniqueClassIds = [...classIds];
-
-        if (uniqueClassIds.length === 0) {
+        if (uniqueClassIds.length === 0 || !dbStudentId) {
             return res.json({ success: true, data: [] });
         }
 
-        let examTypeFilter = '';
-        let queryParams = [uniqueClassIds];
-        let whereClauses = ['e.exam_date_time > NOW()', 'e.class_id IN (?)'];
-
-        if (roles.includes('NewStudent')) {
-            examTypeFilter = 'External';
-            whereClauses.push('e.exam_type = ?');
-            queryParams.push(examTypeFilter);
-        } else if (roles.includes('Student')) {
-            examTypeFilter = 'Internal';
-            whereClauses.push('e.exam_type = ?');
-            queryParams.push(examTypeFilter);
-        }
-        // No examTypeFilter for teachers, so they see all types
-
-        const query = `
-            SELECT
+        // 2. The Magic Query
+        // - We select exams for the class
+        // - We LEFT JOIN with exam_results for THIS student
+        // - We filter WHERE exam_results.id IS NULL (meaning no result exists yet)
+        // - We REMOVED the "exam_date_time > NOW()" check
+        
+        let query = `
+            SELECT 
+                e.id,
                 e.title,
-                DATE_FORMAT(e.exam_date_time, '%Y-%m-%d %H:%i') AS date,
+                e.duration_minutes,
+                DATE_FORMAT(e.exam_date_time, '%Y-%m-%d %H:%i:%s') AS date,
                 c.name AS class,
                 b.school_name as branch,
-                GROUP_CONCAT(DISTINCT cs.name SEPARATOR ', ') AS subjects
+                (
+                    SELECT GROUP_CONCAT(DISTINCT cs.name SEPARATOR ', ')
+                    FROM questions q 
+                    JOIN class_subjects cs ON q.class_subject_id = cs.id 
+                    WHERE q.exam_id = e.id
+                ) AS subjects
             FROM exams e
             JOIN classes c ON e.class_id = c.id
             JOIN branches b ON e.branch_id = b.id
-            LEFT JOIN questions q ON e.id = q.exam_id
-            LEFT JOIN class_subjects cs ON q.class_subject_id = cs.id
-            WHERE ${whereClauses.join(' AND ')}
-            GROUP BY e.id, e.title, e.exam_date_time, c.name, b.school_name
-            ORDER BY e.exam_date_time ASC;
+            
+            -- This JOIN checks if the student has already submitted
+            LEFT JOIN exam_results er ON e.id = er.exam_id AND er.student_id = ?
+            
+            WHERE e.class_id IN (?) 
+            AND er.id IS NULL -- Only show exams NOT in results table
         `;
+
+        const queryParams = [dbStudentId, uniqueClassIds];
+
+        // 3. Apply Role Filters (Internal vs External)
+        if (roles.includes('NewStudent')) {
+            query += ' AND e.exam_type = ?';
+            queryParams.push('External');
+        } else if (roles.includes('Student')) {
+            query += ' AND e.exam_type = ?';
+            queryParams.push('Internal');
+        }
+
+        // 4. Sort by Date (Oldest first so they see missed exams at the top)
+        query += ' ORDER BY e.exam_date_time ASC';
 
         const [exams] = await connection.query(query, queryParams);
 
         const upcomingExams = exams.map(exam => ({
             ...exam,
-            subjects: exam.subjects ? exam.subjects.split(',') : []
+            subjects: exam.subjects ? exam.subjects.split(', ') : []
         }));
 
         res.json({ success: true, data: upcomingExams });
 
     } catch (err) {
-        console.error('Error fetching scoped upcoming exams:', err);
-        res.status(500).json({ success: false, message: 'Server error while fetching upcoming exams.' });
+        console.error('Error fetching scoped exams:', err);
+        res.status(500).json({ success: false, message: 'Server error.' });
     } finally {
         connection.release();
     }
 });
-
 
 // --- CBT Student Facing Endpoints ---
 
