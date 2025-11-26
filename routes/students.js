@@ -877,7 +877,7 @@ router.get(
       // Fetch students in that class
       const query = `
             SELECT 
-                s.id, s.user_id, s.first_name, s.last_name, s.surname_name, s.other_names,
+                s.id, s.student_id, s.user_id, s.first_name, s.last_name, s.surname_name, s.other_names,
                 s.gender, s.dob, s.address, s.nationality, s.state, s.religion, 
                 s.disability, s.passport, s.blood_group, s.genotype, s.allergies,
                 s.previous_class, s.last_term_result, s.birth_certificate, s.medical_report,
