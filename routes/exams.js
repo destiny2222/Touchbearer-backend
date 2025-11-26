@@ -51,7 +51,7 @@ router.post('/store', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, re
         await connection.beginTransaction();
 
         // 2. Format Date for MySQL (Handle ISO string "T" removal)
-        const formattedDateTime = new Date(dateTime).toISOString().slice(0, 19).replace('T', ' ');
+        const formattedDateTime = dateTime;
 
         // 3. Verify Admin Branch Permissions
         const [adminStaff] = await connection.query('SELECT branch_id FROM staff WHERE user_id = ?', [req.user.id]);
