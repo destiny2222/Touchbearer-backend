@@ -1388,6 +1388,8 @@ router.get(
               name: termInfo[0].name,
               session: termInfo[0].session,
               next_term_begins: termInfo[0].next_term_begins,
+              start_date: termInfo[0].start_date,
+              end_date: termInfo[0].end_date,
             },
             attendance: { school_opened: 0, present: 0, absent: 0 },
             position: "N/A",
