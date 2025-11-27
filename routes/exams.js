@@ -1212,7 +1212,7 @@ router.get(
       }
 
       const query = `
-            SELECT
+            SELECT 
                 er.id,
                 er.score,
                 er.total_questions,
@@ -1280,7 +1280,7 @@ router.get(
       const teacherClassIds = teacherClasses.map((c) => c.id);
 
       const query = `
-            SELECT
+            SELECT 
                 er.id,
                 er.score,
                 er.total_questions,
@@ -1309,65 +1309,435 @@ router.get(
   }
 );
 
+// ============================================
+// INDIVIDUAL EXAM RESULT MANAGEMENT ROUTES
+// ============================================
+
+// @route   PUT /api/exams/results/:resultId
+// @desc    Update an individual exam result (score and answered questions)
+// @access  Teacher, Admin, SuperAdmin
+router.put(
+  "/results/:resultId",
+  [auth, authorize(["Teacher", "Admin", "SuperAdmin"])],
+  async (req, res) => {
+    const { resultId } = req.params;
+    const { score, answered_questions } = req.body;
+
+    // Validation
+    if (score === undefined || answered_questions === undefined) {
+      return res.status(400).json({
+        success: false,
+        message: "Both score and answered_questions are required.",
+      });
+    }
+
+    if (typeof score !== "number" || score < 0 || score > 100) {
+      return res.status(400).json({
+        success: false,
+        message: "Score must be a number between 0 and 100.",
+      });
+    }
+
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+
+      // Get the exam result details
+      const [result] = await connection.query(
+        `SELECT er.*, e.class_id, e.branch_id 
+         FROM exam_results er
+         JOIN exams e ON er.exam_id = e.id
+         WHERE er.id = ?`,
+        [resultId]
+      );
+
+      if (result.length === 0) {
+        await connection.rollback();
+        return res.status(404).json({
+          success: false,
+          message: "Exam result not found.",
+        });
+      }
+
+      const examResult = result[0];
+
+      // Authorization checks
+      if (req.user.roles.includes("Teacher")) {
+        const [staff] = await connection.query(
+          "SELECT id FROM staff WHERE user_id = ?",
+          [req.user.id]
+        );
+        
+        if (staff.length === 0) {
+          await connection.rollback();
+          return res.status(403).json({
+            success: false,
+            message: "Staff record not found.",
+          });
+        }
+
+        const teacherId = staff[0].id;
+
+        // Check if teacher owns this class
+        const [teacherClass] = await connection.query(
+          "SELECT id FROM classes WHERE id = ? AND teacher_id = ?",
+          [examResult.class_id, teacherId]
+        );
+
+        if (teacherClass.length === 0) {
+          await connection.rollback();
+          return res.status(403).json({
+            success: false,
+            message: "You can only edit results for your own class.",
+          });
+        }
+      }
+
+      if (req.user.roles.includes("Admin") && !req.user.roles.includes("SuperAdmin")) {
+        const [adminStaff] = await connection.query(
+          "SELECT branch_id FROM staff WHERE user_id = ?",
+          [req.user.id]
+        );
+
+        if (adminStaff.length === 0 || adminStaff[0].branch_id !== examResult.branch_id) {
+          await connection.rollback();
+          return res.status(403).json({
+            success: false,
+            message: "Admins can only edit results for their own branch.",
+          });
+        }
+      }
+
+      // Validate answered_questions against total_questions
+      if (answered_questions < 0 || answered_questions > examResult.total_questions) {
+        await connection.rollback();
+        return res.status(400).json({
+          success: false,
+          message: `Answered questions must be between 0 and ${examResult.total_questions}.`,
+        });
+      }
+
+      // Update the result
+      await connection.query(
+        `UPDATE exam_results 
+         SET score = ?, answered_questions = ?
+         WHERE id = ?`,
+        [score, answered_questions, resultId]
+      );
+
+      await connection.commit();
+
+      res.json({
+        success: true,
+        message: "Exam result updated successfully.",
+        data: {
+          id: resultId,
+          score,
+          answered_questions,
+        },
+      });
+
+      console.log(`Exam result ${resultId} updated successfully.`);
+    } catch (err) {
+      await connection.rollback();
+      console.error("Error updating exam result:", err);
+      res.status(500).json({
+        success: false,
+        message: "Server error while updating exam result.",
+      });
+    } finally {
+      connection.release();
+    }
+  }
+);
+
+// @route   PUT /api/exams/results/:resultId/publish
+// @desc    Publish or unpublish an individual exam result
+// @access  Teacher, Admin, SuperAdmin
+router.put(
+  "/results/:resultId/publish",
+  [auth, authorize(["Teacher", "Admin", "SuperAdmin"])],
+  async (req, res) => {
+    const { resultId } = req.params;
+    const { published } = req.body;
+
+    // Validation
+    if (typeof published !== "boolean") {
+      return res.status(400).json({
+        success: false,
+        message: "Published must be a boolean value.",
+      });
+    }
+
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+
+      // Get the exam result details
+      const [result] = await connection.query(
+        `SELECT er.*, e.class_id, e.branch_id 
+         FROM exam_results er
+         JOIN exams e ON er.exam_id = e.id
+         WHERE er.id = ?`,
+        [resultId]
+      );
+
+      if (result.length === 0) {
+        await connection.rollback();
+        return res.status(404).json({
+          success: false,
+          message: "Exam result not found.",
+        });
+      }
+
+      const examResult = result[0];
+
+      // Authorization checks
+      if (req.user.roles.includes("Teacher")) {
+        const [staff] = await connection.query(
+          "SELECT id FROM staff WHERE user_id = ?",
+          [req.user.id]
+        );
+        
+        if (staff.length === 0) {
+          await connection.rollback();
+          return res.status(403).json({
+            success: false,
+            message: "Staff record not found.",
+          });
+        }
+
+        const teacherId = staff[0].id;
+
+        // Check if teacher owns this class
+        const [teacherClass] = await connection.query(
+          "SELECT id FROM classes WHERE id = ? AND teacher_id = ?",
+          [examResult.class_id, teacherId]
+        );
+
+        if (teacherClass.length === 0) {
+          await connection.rollback();
+          return res.status(403).json({
+            success: false,
+            message: "You can only publish results for your own class.",
+          });
+        }
+      }
+
+      if (req.user.roles.includes("Admin") && !req.user.roles.includes("SuperAdmin")) {
+        const [adminStaff] = await connection.query(
+          "SELECT branch_id FROM staff WHERE user_id = ?",
+          [req.user.id]
+        );
+
+        if (adminStaff.length === 0 || adminStaff[0].branch_id !== examResult.branch_id) {
+          await connection.rollback();
+          return res.status(403).json({
+            success: false,
+            message: "Admins can only publish results for their own branch.",
+          });
+        }
+      }
+
+      // Update the publish status
+      if (published) {
+        await connection.query(
+          `UPDATE exam_results 
+            SET published = TRUE, published_by = ?, published_at = NOW()
+            WHERE id = ?`,
+          [req.user.id, resultId]
+        );
+      } else {
+        await connection.query(
+          `UPDATE exam_results 
+            SET published = FALSE, published_by = NULL, published_at = NULL
+            WHERE id = ?`,
+          [resultId]
+        );
+      }
+
+      await connection.commit();
+
+      res.json({
+        success: true,
+        message: published
+          ? "Exam result published successfully."
+          : "Exam result unpublished successfully.",
+        data: {
+          id: resultId,
+          published,
+        },
+      });
+
+      console.log(
+        `Exam result ${resultId} ${published ? "published" : "unpublished"} successfully.`
+      );
+    } catch (err) {
+      await connection.rollback();
+      console.error("Error updating publish status:", err);
+      res.status(500).json({
+        success: false,
+        message: "Server error while updating publish status.",
+      });
+    } finally {
+      connection.release();
+    }
+  }
+);
+
 // @route   PUT /api/exams/results/publish
-// @desc    Publish results for a specific exam for the teacher's class
-// @access  Teacher
+// @desc    Publish or unpublish all results for a specific exam and class
+// @access  Teacher, Admin, SuperAdmin
 router.put(
   "/results/publish",
-  [auth, authorize(["Teacher"])],
+  [auth, authorize(["Teacher", "Admin", "SuperAdmin"])],
   async (req, res) => {
-    const { exam_id, class_id } = req.body;
+    const { exam_id, class_id, published } = req.body;
 
+    // Validation
+    if (!exam_id || !class_id) {
+      return res.status(400).json({
+        success: false,
+        message: "exam_id and class_id are required.",
+      });
+    }
+
+    if (typeof published !== "boolean") {
+      return res.status(400).json({
+        success: false,
+        message: "Published must be a boolean value.",
+      });
+    }
+
+    const connection = await pool.getConnection();
     try {
-      const [staff] = await pool.query(
-        "SELECT id FROM staff WHERE user_id = ?",
-        [req.user.id]
+      await connection.beginTransaction();
+
+      // Get exam details
+      const [exam] = await connection.query(
+        "SELECT branch_id, class_id FROM exams WHERE id = ?",
+        [exam_id]
       );
-      if (staff.length === 0) {
-        return res
-          .status(403)
-          .json({
-            success: false,
-            message: "You are not registered as a staff member.",
-          });
-      }
-      const teacherId = staff[0].id;
 
-      const [teacherClass] = await pool.query(
-        "SELECT id FROM classes WHERE teacher_id = ? AND id = ?",
-        [teacherId, class_id]
-      );
-      if (teacherClass.length === 0) {
-        return res
-          .status(403)
-          .json({
-            success: false,
-            message:
-              "You are not authorized to publish results for this class.",
-          });
-      }
-
-      const updateQuery = `
-            UPDATE exam_results
-            SET
-                published = TRUE,
-                published_by = ?,
-                published_at = NOW()
-            WHERE exam_id = ? AND student_id IN (
-                SELECT user_id FROM students WHERE class_id = ?
-            )
-        `;
-
-      await pool.query(updateQuery, [req.user.id, exam_id, class_id]);
-      res.json({ success: true, message: "Results published successfully." });
-    } catch (err) {
-      console.error("Error publishing exam results:", err);
-      res
-        .status(500)
-        .json({
+      if (exam.length === 0) {
+        await connection.rollback();
+        return res.status(404).json({
           success: false,
-          message: "Server error while publishing exam results.",
+          message: "Exam not found.",
         });
+      }
+
+      const examData = exam[0];
+
+      // Verify class_id matches exam
+      if (examData.class_id !== class_id) {
+        await connection.rollback();
+        return res.status(400).json({
+          success: false,
+          message: "Class ID does not match the exam.",
+        });
+      }
+
+      // Authorization checks
+      if (req.user.roles.includes("Teacher")) {
+        const [staff] = await connection.query(
+          "SELECT id FROM staff WHERE user_id = ?",
+          [req.user.id]
+        );
+
+        if (staff.length === 0) {
+          await connection.rollback();
+          return res.status(403).json({
+            success: false,
+            message: "Staff record not found.",
+          });
+        }
+
+        const teacherId = staff[0].id;
+
+        // Check if teacher owns this class
+        const [teacherClass] = await connection.query(
+          "SELECT id FROM classes WHERE id = ? AND teacher_id = ?",
+          [class_id, teacherId]
+        );
+
+        if (teacherClass.length === 0) {
+          await connection.rollback();
+          return res.status(403).json({
+            success: false,
+            message: "You can only publish results for your own class.",
+          });
+        }
+      }
+
+      if (req.user.roles.includes("Admin") && !req.user.roles.includes("SuperAdmin")) {
+        const [adminStaff] = await connection.query(
+          "SELECT branch_id FROM staff WHERE user_id = ?",
+          [req.user.id]
+        );
+
+        if (adminStaff.length === 0 || adminStaff[0].branch_id !== examData.branch_id) {
+          await connection.rollback();
+          return res.status(403).json({
+            success: false,
+            message: "Admins can only publish results for their own branch.",
+          });
+        }
+      }
+
+      // Update all results for this exam and class
+      let updateQuery;
+      let updateParams;
+
+      if (published) {
+        updateQuery = `
+          UPDATE exam_results er
+          JOIN students s ON er.student_id = s.user_id
+          SET er.published = TRUE, er.published_by = ?, er.published_at = NOW()
+          WHERE er.exam_id = ? AND s.class_id = ?
+        `;
+        updateParams = [req.user.id, exam_id, class_id];
+      } else {
+        updateQuery = `
+          UPDATE exam_results er
+          JOIN students s ON er.student_id = s.user_id
+          SET er.published = FALSE, er.published_by = NULL, er.published_at = NULL
+          WHERE er.exam_id = ? AND s.class_id = ?
+        `;
+        updateParams = [exam_id, class_id];
+      }
+
+      const [updateResult] = await connection.query(updateQuery, updateParams);
+
+      await connection.commit();
+
+      res.json({
+        success: true,
+        message: published
+          ? "All results published successfully."
+          : "All results unpublished successfully.",
+        data: {
+          affected_rows: updateResult.affectedRows,
+          exam_id,
+          class_id,
+          published,
+        },
+      });
+
+      console.log(
+        `All results for exam ${exam_id} and class ${class_id} ${
+          published ? "published" : "unpublished"
+        } successfully.`
+      );
+    } catch (err) {
+      await connection.rollback();
+      console.error("Error publishing/unpublishing results:", err);
+      res.status(500).json({
+        success: false,
+        message: "Server error while updating publish status.",
+      });
+    } finally {
+      connection.release();
     }
   }
 );
@@ -1403,7 +1773,7 @@ router.get("/results/me", [auth, authorize(["Student"])], async (req, res) => {
     const term_id = terms[0].id;
 
     const query = `
-            SELECT
+            SELECT 
                 er.id,
                 er.score,
                 er.exam_id,
