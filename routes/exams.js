@@ -11,6 +11,385 @@ function getOrdinal(n) {
   return n + (s[(v - 20) % 10] || s[v] || s[0]);
 }
 
+// Helper function to sync edited scores to student_results
+async function syncEditedScoreToStudentResults(connection, examResultData) {
+ 
+  const { 
+    exam_id, 
+    student_id, 
+    score, // This is the manually edited score we should use!
+    answers, 
+    branch_id, 
+    class_id 
+  } = examResultData;
+
+  // Get student record
+  const [student] = await connection.query(
+    "SELECT id, class_id FROM students WHERE user_id = ?",
+    [student_id]
+  );
+
+  if (student.length === 0) {
+ 
+    return;
+  }
+
+  const studentId = student[0].id;
+  const studentClassId = student[0].class_id || class_id;
+
+  // Get exam details
+  const [examResultFromTable] = await connection.query(
+    "SELECT * FROM exams WHERE id = ?",
+    [exam_id]
+  );
+  
+  if (examResultFromTable.length === 0) {
+    console.error("Exam not found for sync:", exam_id);
+    return;
+  }
+  const exam = examResultFromTable[0];
+
+  // Get active term
+  const [terms] = await connection.query(
+    "SELECT id FROM terms WHERE branch_id = ? AND is_active = TRUE",
+    [branch_id || exam.branch_id]
+  );
+  
+  const termId = terms.length > 0 ? terms[0].id : null;
+
+  if (!termId) {
+    console.error("No active term found for branch:", branch_id || exam.branch_id);
+    return;
+  }
+
+  // Get all questions for the exam to determine subjects involved
+  const [allQuestions] = await connection.query(
+    `SELECT q.id, q.class_subject_id, q.correct_answer_index 
+     FROM questions q 
+     WHERE q.exam_id = ?`,
+    [exam_id]
+  );
+
+  if (allQuestions.length === 0) {
+
+    return;
+  }
+
+  // Count questions per subject
+  const questionsBySubject = {};
+  for (const q of allQuestions) {
+    if (!questionsBySubject[q.class_subject_id]) {
+      questionsBySubject[q.class_subject_id] = 0;
+    }
+    questionsBySubject[q.class_subject_id]++;
+  }
+
+  const subjectIds = Object.keys(questionsBySubject);
+  const totalQuestions = allQuestions.length;
+
+
+  // For single-subject exams, use the edited score directly
+  // For multi-subject exams, we need to calculate proportional scores based on answers
+  if (subjectIds.length === 1) {
+    // Single subject - use the edited score directly
+    const subjectId = subjectIds[0];
+    
+    const [subject] = await connection.query(
+      "SELECT teacher_id FROM class_subjects WHERE id = ?",
+      [subjectId]
+    );
+    const teacherId = subject.length > 0 ? subject[0].teacher_id : null;
+
+
+    try {
+      const resultId = uuidv4();
+      const [upsertResult] = await connection.query(
+        `INSERT INTO student_results 
+         (id, student_id, class_id, subject_id, term_id, assessment_type, score, teacher_id, branch_id, exam_id) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE 
+           score = VALUES(score),
+           teacher_id = VALUES(teacher_id),
+           exam_id = VALUES(exam_id),
+           class_id = VALUES(class_id),
+           branch_id = VALUES(branch_id),
+           updated_at = NOW()`,
+        [
+          resultId,
+          studentId,
+          studentClassId,
+          subjectId,
+          termId,
+          exam.assessment_type,
+          score, // Use the edited score directly!
+          teacherId,
+          exam.branch_id,
+          exam_id,
+        ]
+      );
+    } catch (err) {
+      console.error("Error during upsert:", err);
+    }
+  } else {
+    // Multi-subject exam - calculate proportional scores based on the edited total
+    // We need to distribute the edited score proportionally based on original answer performance
+    
+    let answersArray = [];
+    try {
+      answersArray = JSON.parse(answers);
+    } catch (e) {
+      return;
+    }
+
+    // Build question map
+    const questionMap = new Map(
+      allQuestions.map(q => [q.id, {
+        class_subject_id: q.class_subject_id,
+        correctAnswerIndex: q.correct_answer_index
+      }])
+    );
+
+    // Calculate original correct answers per subject
+    const originalScoresBySubject = {};
+    for (const answer of answersArray) {
+      const { questionId, selectedOptionIndex } = answer;
+      if (questionMap.has(questionId)) {
+        const { class_subject_id, correctAnswerIndex } = questionMap.get(questionId);
+
+        if (!originalScoresBySubject[class_subject_id]) {
+          originalScoresBySubject[class_subject_id] = { correct: 0, total: questionsBySubject[class_subject_id] };
+        }
+
+        if (selectedOptionIndex === correctAnswerIndex) {
+          originalScoresBySubject[class_subject_id].correct++;
+        }
+      }
+    }
+
+    // Calculate the original total percentage
+    let originalTotalCorrect = 0;
+    for (const subjectId in originalScoresBySubject) {
+      originalTotalCorrect += originalScoresBySubject[subjectId].correct;
+    }
+    const originalPercentage = totalQuestions > 0 ? (originalTotalCorrect / totalQuestions) * 100 : 0;
+
+    // Calculate the scaling factor (edited score / original score)
+    // If original was 0, we distribute equally
+    const scalingFactor = originalPercentage > 0 ? score / originalPercentage : 1;
+
+
+    // Update each subject with scaled score
+    for (const subjectId in questionsBySubject) {
+      const subjectTotal = questionsBySubject[subjectId];
+      const subjectCorrect = originalScoresBySubject[subjectId]?.correct || 0;
+      const originalSubjectPercentage = subjectTotal > 0 ? (subjectCorrect / subjectTotal) * 100 : 0;
+      
+      // Scale the subject score proportionally
+      let scaledScore = originalSubjectPercentage * scalingFactor;
+      // Cap at 100%
+      scaledScore = Math.min(scaledScore, 100);
+
+      const [subject] = await connection.query(
+        "SELECT teacher_id FROM class_subjects WHERE id = ?",
+        [subjectId]
+      );
+      const teacherId = subject.length > 0 ? subject[0].teacher_id : null;
+
+
+      try {
+        const resultId = uuidv4();
+        const [upsertResult] = await connection.query(
+          `INSERT INTO student_results 
+           (id, student_id, class_id, subject_id, term_id, assessment_type, score, teacher_id, branch_id, exam_id) 
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON DUPLICATE KEY UPDATE 
+             score = VALUES(score),
+             teacher_id = VALUES(teacher_id),
+             exam_id = VALUES(exam_id),
+             class_id = VALUES(class_id),
+             branch_id = VALUES(branch_id),
+             updated_at = NOW()`,
+          [
+            resultId,
+            studentId,
+            studentClassId,
+            subjectId,
+            termId,
+            exam.assessment_type,
+            scaledScore,
+            teacherId,
+            exam.branch_id,
+            exam_id,
+          ]
+        );
+      
+      } catch (err) {
+        console.error("Error during upsert:", err);
+      }
+    }
+  }
+
+
+}
+
+
+// Helper function to sync published results to student_results
+async function syncToStudentResults(connection, examResult) {
+  const { exam_id, student_id, answers } = examResult;
+  
+  // Parse the answers to calculate subject-wise scores
+  let answersArray;
+  try {
+    answersArray = JSON.parse(answers);
+  } catch (e) {
+    console.error("Error parsing answers:", e);
+    return;
+  }
+
+  // Get exam details
+  const [examResultFromTable] = await connection.query(
+    "SELECT * FROM exams WHERE id = ?",
+    [exam_id]
+  );
+  
+  if (examResultFromTable.length === 0) {
+    console.error("Exam not found for sync:", exam_id);
+    return;
+  }
+  const exam = examResultFromTable[0];
+
+  // Get all questions for the exam to calculate subject breakdown
+  const [allQuestions] = await connection.query(
+    `SELECT q.id, q.class_subject_id, q.correct_answer_index 
+     FROM questions q 
+     WHERE q.exam_id = ?`,
+    [exam_id]
+  );
+
+  if (allQuestions.length === 0) return;
+
+  // Calculate subject-wise scores
+  const scoresBySubject = {};
+  const questionsBySubject = {};
+  const questionMap = new Map(
+    allQuestions.map(q => [q.id, {
+      class_subject_id: q.class_subject_id,
+      correctAnswerIndex: q.correct_answer_index
+    }])
+  );
+
+  // Count questions per subject
+  for (const q of allQuestions) {
+    if (!questionsBySubject[q.class_subject_id]) {
+      questionsBySubject[q.class_subject_id] = 0;
+    }
+    questionsBySubject[q.class_subject_id]++;
+  }
+
+  // Calculate scores per subject
+  for (const answer of answersArray) {
+    const { questionId, selectedOptionIndex } = answer;
+    if (questionMap.has(questionId)) {
+      const { class_subject_id, correctAnswerIndex } = questionMap.get(questionId);
+      
+      if (!scoresBySubject[class_subject_id]) {
+        scoresBySubject[class_subject_id] = { score: 0, total: questionsBySubject[class_subject_id] };
+      }
+      
+      if (selectedOptionIndex === correctAnswerIndex) {
+        scoresBySubject[class_subject_id].score++;
+      }
+    }
+  }
+
+  // Get student and term details
+  const [student] = await connection.query(
+    "SELECT id, class_id FROM students WHERE user_id = ?",
+    [student_id]
+  );
+  
+  if (student.length === 0) return;
+  
+  const studentId = student[0].id;
+  const class_id = student[0].class_id;
+
+  const [terms] = await connection.query(
+    "SELECT id FROM terms WHERE branch_id = ? AND is_active = TRUE",
+    [exam.branch_id]
+  );
+  const termId = terms.length > 0 ? terms[0].id : null;
+
+  if (!termId) {
+    console.error("No active term found for branch:", exam.branch_id);
+    return;
+  }
+
+  // Update or insert records for each subject using UPSERT pattern
+  for (const subjectId in questionsBySubject) {
+    const subjectTotal = questionsBySubject[subjectId];
+    const subjectScore = scoresBySubject[subjectId]?.score || 0;
+    const percentageScore = subjectTotal > 0 ? (subjectScore / subjectTotal) * 100 : 0;
+
+    const [subject] = await connection.query(
+      "SELECT teacher_id FROM class_subjects WHERE id = ?",
+      [subjectId]
+    );
+    const teacherId = subject.length > 0 ? subject[0].teacher_id : null;
+
+    // Use INSERT ... ON DUPLICATE KEY UPDATE to handle the unique constraint
+    const resultId = uuidv4();
+    await connection.query(
+      `INSERT INTO student_results 
+       (id, student_id, class_id, subject_id, term_id, assessment_type, score, teacher_id, branch_id, exam_id) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE 
+         score = VALUES(score),
+         teacher_id = VALUES(teacher_id),
+         exam_id = VALUES(exam_id),
+         class_id = VALUES(class_id),
+         branch_id = VALUES(branch_id),
+         updated_at = NOW()`,
+      [
+        resultId,
+        studentId,
+        class_id,
+        subjectId,
+        termId,
+        exam.assessment_type,
+        percentageScore,
+        teacherId,
+        exam.branch_id,
+        exam_id,
+      ]
+    );
+  }
+}
+
+
+// Helper function to remove from student_results when unpublishing
+async function removeFromStudentResults(connection, examResult) {
+  const { exam_id, student_id } = examResult;
+  
+  const [student] = await connection.query(
+    "SELECT id FROM students WHERE user_id = ?",
+    [student_id]
+  );
+  
+  if (student.length === 0) return;
+  
+  const studentId = student[0].id;
+
+  // Remove all student_results entries linked to this exam for this student
+  await connection.query(
+    "DELETE FROM student_results WHERE student_id = ? AND exam_id = ?",
+    [studentId, exam_id]
+  );
+}
+
+
+
+
+
 // @route   POST /api/exams/store
 // @desc    Create a new exam with subjects and questions
 // @access  Admin, SuperAdmin
@@ -1080,53 +1459,53 @@ router.post(
 
       await connection.query("INSERT INTO exam_results SET ?", result);
 
-      // Sync scores with student_results table
-      const [student] = await connection.query(
-        "SELECT id FROM students WHERE user_id = ?",
-        [userId]
-      );
-      if (student.length > 0) {
-        const studentId = student[0].id;
-        for (const subjectId in scoresBySubject) {
-          const { score, total } = scoresBySubject[subjectId];
-          const percentageScore = total > 0 ? (score / total) * 100 : 0;
+      // FIX: NO, WE SHOULD Sync scores with student_results table
+      // const [student] = await connection.query(
+      //   "SELECT id FROM students WHERE user_id = ?",
+      //   [userId]
+      // );
+      // if (student.length > 0) {
+      //   const studentId = student[0].id;
+      //   for (const subjectId in scoresBySubject) {
+      //     const { score, total } = scoresBySubject[subjectId];
+      //     const percentageScore = total > 0 ? (score / total) * 100 : 0;
 
-          const [subject] = await connection.query(
-            "SELECT teacher_id FROM class_subjects WHERE id = ?",
-            [subjectId]
-          );
-          const teacherId = subject.length > 0 ? subject[0].teacher_id : null;
+      //     const [subject] = await connection.query(
+      //       "SELECT teacher_id FROM class_subjects WHERE id = ?",
+      //       [subjectId]
+      //     );
+      //     const teacherId = subject.length > 0 ? subject[0].teacher_id : null;
 
-          const [existing] = await connection.query(
-            "SELECT id FROM student_results WHERE student_id = ? AND subject_id = ? AND term_id = ? AND assessment_type = ?",
-            [studentId, subjectId, termId, exam.assessment_type]
-          );
+      //     const [existing] = await connection.query(
+      //       "SELECT id FROM student_results WHERE student_id = ? AND subject_id = ? AND term_id = ? AND assessment_type = ?",
+      //       [studentId, subjectId, termId, exam.assessment_type]
+      //     );
 
-          if (existing.length > 0) {
-            await connection.query(
-              "UPDATE student_results SET score = ?, teacher_id = ?, exam_id = ?, updated_at = NOW() WHERE id = ?",
-              [percentageScore, teacherId, examId, existing[0].id]
-            );
-          } else {
-            const resultId = uuidv4();
-            await connection.query(
-              "INSERT INTO student_results (id, student_id, class_id, subject_id, term_id, assessment_type, score, teacher_id, branch_id, exam_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-              [
-                resultId,
-                studentId,
-                exam.class_id,
-                subjectId,
-                termId,
-                exam.assessment_type,
-                percentageScore,
-                teacherId,
-                exam.branch_id,
-                examId,
-              ]
-            );
-          }
-        }
-      }
+      //     if (existing.length > 0) {
+      //       await connection.query(
+      //         "UPDATE student_results SET score = ?, teacher_id = ?, exam_id = ?, updated_at = NOW() WHERE id = ?",
+      //         [percentageScore, teacherId, examId, existing[0].id]
+      //       );
+      //     } else {
+      //       const resultId = uuidv4();
+      //       await connection.query(
+      //         "INSERT INTO student_results (id, student_id, class_id, subject_id, term_id, assessment_type, score, teacher_id, branch_id, exam_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      //         [
+      //           resultId,
+      //           studentId,
+      //           exam.class_id,
+      //           subjectId,
+      //           termId,
+      //           exam.assessment_type,
+      //           percentageScore,
+      //           teacherId,
+      //           exam.branch_id,
+      //           examId,
+      //         ]
+      //       );
+      //     }
+      //   }
+      // }
 
       await connection.commit();
 
@@ -1389,13 +1768,32 @@ router.put(
         });
       }
 
-      // Update the result
       await connection.query(
         `UPDATE exam_results 
          SET score = ?, answered_questions = ?
          WHERE id = ?`,
         [score, answered_questions, resultId]
       );
+
+
+       // If the result is published, sync to student_results
+      if (examResult.published) {
+        await syncEditedScoreToStudentResults(connection, {
+          exam_id: examResult.exam_id,
+          student_id: examResult.student_id,
+          score: score,
+          answers: examResult.answers,
+          total_questions: examResult.total_questions,
+          branch_id: examResult.branch_id,
+          assessment_type: examResult.assessment_type,
+          class_id: examResult.class_id,
+        });
+      }
+
+      await connection.commit();
+
+
+
 
       await connection.commit();
 
@@ -1517,19 +1915,24 @@ router.put(
         }
       }
 
-      // Update the publish status
+      
       if (published) {
+        await syncToStudentResults(connection, examResult);
+        
         await connection.query(
           `UPDATE exam_results 
-            SET published = TRUE, published_by = ?, published_at = NOW()
-            WHERE id = ?`,
+           SET published = TRUE, published_by = ?, published_at = NOW()
+           WHERE id = ?`,
           [req.user.id, resultId]
         );
       } else {
+        
+        await removeFromStudentResults(connection, examResult);
+        
         await connection.query(
           `UPDATE exam_results 
-            SET published = FALSE, published_by = NULL, published_at = NULL
-            WHERE id = ?`,
+           SET published = FALSE, published_by = NULL, published_at = NULL
+           WHERE id = ?`,
           [resultId]
         );
       }
