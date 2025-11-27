@@ -1191,6 +1191,30 @@ async function initializeDatabase() {
     console.log("Revenue table created");
     await connection.query(createStudentResultsTable);
     console.log("Student results table created");
+
+    try {
+      const [studentResultsColumns] = await connection.query(
+        `
+      SELECT COLUMN_NAME 
+      FROM INFORMATION_SCHEMA.COLUMNS 
+      WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'student_results'
+    `,
+        [dbName]
+      );
+
+      const existingStudentResultsCols = studentResultsColumns.map(
+        (row) => row.COLUMN_NAME
+      );
+
+      if (!existingStudentResultsCols.includes("school_type")) {
+        await connection.query(
+          "ALTER TABLE student_results ADD COLUMN school_type VARCHAR(100) DEFAULT 'Grade School' AFTER published_at"
+        );
+        console.log("Added 'school_type' column to student_results table");
+      }
+    } catch (error) {
+      console.log("Error updating student_results table:", error.message);
+    }
     await connection.query(createStudentSkillsTable);
     console.log("Student skills table created");
     await connection.query(createReportCardCommentsTable);

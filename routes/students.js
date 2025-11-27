@@ -631,10 +631,13 @@ router.get(
   async (req, res) => {
     try {
       let query = `
-            SELECT s.id, u.email as student_id, s.first_name, s.last_name, s.dob, s.address, s.nationality, s.state, s.religion, s.disability, s.passport, c.name AS class_name, b.school_name AS branch, b.address AS branch_address,
-                   p.name AS parent_name, p.email AS parent_email, p.phone AS parent_phone,
-                   s.previous_class, s.last_term_result, s.birth_certificate, s.medical_report
-            FROM students s
+            SELECT s.id, u.email as student_id, s.first_name, s.last_name, 
+           s.gender, s.dob, s.address, s.nationality, s.state, s.religion, 
+           s.disability, s.passport, c.name AS class_name, 
+           b.school_name AS branch, b.address AS branch_address,
+           p.name AS parent_name, p.email AS parent_email, p.phone AS parent_phone,
+           s.previous_class, s.last_term_result, s.birth_certificate, s.medical_report
+    FROM students s
             JOIN users u ON s.user_id = u.id
             JOIN classes c ON s.class_id = c.id
             JOIN branches b ON s.branch_id = b.id
