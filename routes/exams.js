@@ -41,23 +41,19 @@ router.post(
       !Array.isArray(subjects) ||
       subjects.length === 0
     ) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message:
-            "Please provide all required fields, including at least one subject with questions.",
-        });
+      return res.status(400).json({
+        success: false,
+        message:
+          "Please provide all required fields, including at least one subject with questions.",
+      });
     }
 
     // Validate assessment type only for Internal exams
     if (examType === "Internal" && !assessment_type) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "Assessment type is required for Internal exams.",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "Assessment type is required for Internal exams.",
+      });
     }
 
     // Ensure every subject has questions
@@ -91,12 +87,10 @@ router.post(
         (!adminStaff.length || !adminStaff[0].branch_id)
       ) {
         await connection.rollback();
-        return res
-          .status(403)
-          .json({
-            success: false,
-            message: "Admin not associated with a branch.",
-          });
+        return res.status(403).json({
+          success: false,
+          message: "Admin not associated with a branch.",
+        });
       }
       const branch_id = adminStaff[0].branch_id;
 
@@ -107,12 +101,10 @@ router.post(
       );
       if (classInfo.length === 0) {
         await connection.rollback();
-        return res
-          .status(400)
-          .json({
-            success: false,
-            message: "Class not found for the given branch.",
-          });
+        return res.status(400).json({
+          success: false,
+          message: "Class not found for the given branch.",
+        });
       }
 
       // 5. SMART SUBJECT RESOLUTION logic
@@ -130,12 +122,10 @@ router.post(
 
         if (subjectCheck.length === 0) {
           await connection.rollback();
-          return res
-            .status(400)
-            .json({
-              success: false,
-              message: `Invalid class_subject_id: ${incomingId}`,
-            });
+          return res.status(400).json({
+            success: false,
+            message: `Invalid class_subject_id: ${incomingId}`,
+          });
         }
 
         const subjectData = subjectCheck[0];
@@ -192,13 +182,11 @@ router.post(
           newExamEndTime > existingExamStartTime
         ) {
           await connection.rollback();
-          return res
-            .status(400)
-            .json({
-              success: false,
-              message:
-                "Schedule conflict: The new exam time overlaps with an existing one.",
-            });
+          return res.status(400).json({
+            success: false,
+            message:
+              "Schedule conflict: The new exam time overlaps with an existing one.",
+          });
         }
       }
 
@@ -222,6 +210,8 @@ router.post(
       };
       await connection.query("INSERT INTO exams SET ?", newExam);
 
+      // In the POST /store route, update the question insertion section:
+
       // 8. Insert Questions (Using the Validated Subject IDs)
       for (const subject of validatedSubjects) {
         const questionValues = [];
@@ -229,8 +219,9 @@ router.post(
           questionValues.push([
             uuidv4(),
             newExamId,
-            subject.class_subject_id, // Corrected ID
+            subject.class_subject_id,
             question.text,
+            question.question_image_url || null,
             JSON.stringify(question.options),
             question.correctAnswerIndex,
           ]);
@@ -238,7 +229,7 @@ router.post(
 
         if (questionValues.length > 0) {
           await connection.query(
-            "INSERT INTO questions (id, exam_id, class_subject_id, question_text, options, correct_answer_index) VALUES ?",
+            "INSERT INTO questions (id, exam_id, class_subject_id, question_text, question_image_url, options, correct_answer_index) VALUES ?",
             [questionValues]
           );
         }
@@ -246,13 +237,11 @@ router.post(
 
       await connection.commit();
       console.log(`Exam created successfully for class ${class_id}`);
-      res
-        .status(201)
-        .json({
-          success: true,
-          message: "Exam created successfully.",
-          data: newExam,
-        });
+      res.status(201).json({
+        success: true,
+        message: "Exam created successfully.",
+        data: newExam,
+      });
     } catch (err) {
       await connection.rollback();
       console.error("Error creating exam:", err);
@@ -315,12 +304,10 @@ router.get(
       res.json({ success: true, data: exams });
     } catch (err) {
       console.error("Error fetching exams:", err);
-      res
-        .status(500)
-        .json({
-          success: false,
-          message: "Server error while fetching exams.",
-        });
+      res.status(500).json({
+        success: false,
+        message: "Server error while fetching exams.",
+      });
     }
   }
 );
@@ -337,12 +324,10 @@ router.put(
 
     // Basic validation
     if (!title || !examType || !dateTime || !duration_minutes) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "Please provide all required fields for update.",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "Please provide all required fields for update.",
+      });
     }
 
     const connection = await pool.getConnection();
@@ -370,12 +355,10 @@ router.put(
           adminStaff[0].branch_id !== exam[0].branch_id
         ) {
           await connection.rollback();
-          return res
-            .status(403)
-            .json({
-              success: false,
-              message: "You are not authorized to update this exam.",
-            });
+          return res.status(403).json({
+            success: false,
+            message: "You are not authorized to update this exam.",
+          });
         }
       }
 
@@ -470,12 +453,10 @@ router.delete(
           adminStaff.length === 0 ||
           adminStaff[0].branch_id !== exam[0].branch_id
         ) {
-          return res
-            .status(403)
-            .json({
-              success: false,
-              message: "You are not authorized to delete this exam.",
-            });
+          return res.status(403).json({
+            success: false,
+            message: "You are not authorized to delete this exam.",
+          });
         }
       }
 
@@ -501,12 +482,10 @@ router.get("/class", [auth, authorize(["Teacher"])], async (req, res) => {
     ]);
 
     if (staff.length === 0) {
-      return res
-        .status(403)
-        .json({
-          success: false,
-          message: "Authenticated user is not registered as a staff member.",
-        });
+      return res.status(403).json({
+        success: false,
+        message: "Authenticated user is not registered as a staff member.",
+      });
     }
     const teacherId = staff[0].id;
 
@@ -516,12 +495,10 @@ router.get("/class", [auth, authorize(["Teacher"])], async (req, res) => {
     );
 
     if (classes.length === 0) {
-      return res
-        .status(404)
-        .json({
-          success: false,
-          message: "Teacher is not assigned to any class.",
-        });
+      return res.status(404).json({
+        success: false,
+        message: "Teacher is not assigned to any class.",
+      });
     }
 
     const classIds = classes.map((c) => c.id);
@@ -585,56 +562,67 @@ router.get("/upcoming", async (req, res) => {
     res.json({ success: true, data: upcomingExams });
   } catch (err) {
     console.error("Error fetching upcoming exams:", err);
-    res
-      .status(500)
-      .json({
-        success: false,
-        message: "Server error while fetching upcoming exams.",
-      });
+    res.status(500).json({
+      success: false,
+      message: "Server error while fetching upcoming exams.",
+    });
   }
 });
 
 // @route   GET /api/exams/me/upcoming
 // @desc    Get exams that are active or past, BUT NOT taken yet
-router.get('/me/upcoming', auth, authorize(['Student', 'NewStudent', 'Parent', 'Teacher']), async (req, res) => {
+router.get(
+  "/me/upcoming",
+  auth,
+  authorize(["Student", "NewStudent", "Parent", "Teacher"]),
+  async (req, res) => {
     const { id: userId, roles } = req.user;
     const connection = await pool.getConnection();
 
     try {
-        // 1. Get the Student's details (Class ID)
-        let dbStudentId = null; // This is the ID used in the exam_results table
-        const classIds = new Set();
+      // 1. Get the Student's details (Class ID)
+      let dbStudentId = null; // This is the ID used in the exam_results table
+      const classIds = new Set();
 
-        if (roles.includes('Student')) {
-            const [students] = await connection.query('SELECT id, class_id FROM students WHERE user_id = ?', [userId]);
-            if (students.length > 0) {
-                dbStudentId = students[0].id; // Use the Student Profile ID
-                if (students[0].class_id) classIds.add(students[0].class_id);
-            }
-        } else if (roles.includes('NewStudent')) {
-            // For new students, we might use the user_id or email depending on your setup
-            // Assuming NewStudent results are tracked by user_id directly:
-            dbStudentId = userId; 
-            
-            const [users] = await connection.query('SELECT email FROM users WHERE id = ?', [userId]);
-            if (users.length > 0) {
-                const [newStudents] = await connection.query('SELECT class_id FROM new_students WHERE student_id = ?', [users[0].email]);
-                if (newStudents.length > 0) classIds.add(newStudents[0].class_id);
-            }
+      if (roles.includes("Student")) {
+        const [students] = await connection.query(
+          "SELECT id, class_id FROM students WHERE user_id = ?",
+          [userId]
+        );
+        if (students.length > 0) {
+          dbStudentId = students[0].id; // Use the Student Profile ID
+          if (students[0].class_id) classIds.add(students[0].class_id);
         }
+      } else if (roles.includes("NewStudent")) {
+        // For new students, we might use the user_id or email depending on your setup
+        // Assuming NewStudent results are tracked by user_id directly:
+        dbStudentId = userId;
 
-        const uniqueClassIds = [...classIds];
-        if (uniqueClassIds.length === 0 || !dbStudentId) {
-            return res.json({ success: true, data: [] });
+        const [users] = await connection.query(
+          "SELECT email FROM users WHERE id = ?",
+          [userId]
+        );
+        if (users.length > 0) {
+          const [newStudents] = await connection.query(
+            "SELECT class_id FROM new_students WHERE student_id = ?",
+            [users[0].email]
+          );
+          if (newStudents.length > 0) classIds.add(newStudents[0].class_id);
         }
+      }
 
-        // 2. The Magic Query
-        // - We select exams for the class
-        // - We LEFT JOIN with exam_results for THIS student
-        // - We filter WHERE exam_results.id IS NULL (meaning no result exists yet)
-        // - We REMOVED the "exam_date_time > NOW()" check
-        
-        let query = `
+      const uniqueClassIds = [...classIds];
+      if (uniqueClassIds.length === 0 || !dbStudentId) {
+        return res.json({ success: true, data: [] });
+      }
+
+      // 2. The Magic Query
+      // - We select exams for the class
+      // - We LEFT JOIN with exam_results for THIS student
+      // - We filter WHERE exam_results.id IS NULL (meaning no result exists yet)
+      // - We REMOVED the "exam_date_time > NOW()" check
+
+      let query = `
             SELECT 
                 e.id,
                 e.title,
@@ -659,35 +647,36 @@ router.get('/me/upcoming', auth, authorize(['Student', 'NewStudent', 'Parent', '
             AND er.id IS NULL -- Only show exams NOT in results table
         `;
 
-        const queryParams = [dbStudentId, uniqueClassIds];
+      const queryParams = [dbStudentId, uniqueClassIds];
 
-        // 3. Apply Role Filters (Internal vs External)
-        if (roles.includes('NewStudent')) {
-            query += ' AND e.exam_type = ?';
-            queryParams.push('External');
-        } else if (roles.includes('Student')) {
-            query += ' AND e.exam_type = ?';
-            queryParams.push('Internal');
-        }
+      // 3. Apply Role Filters (Internal vs External)
+      if (roles.includes("NewStudent")) {
+        query += " AND e.exam_type = ?";
+        queryParams.push("External");
+      } else if (roles.includes("Student")) {
+        query += " AND e.exam_type = ?";
+        queryParams.push("Internal");
+      }
 
-        // 4. Sort by Date (Oldest first so they see missed exams at the top)
-        query += ' ORDER BY e.exam_date_time ASC';
+      // 4. Sort by Date (Oldest first so they see missed exams at the top)
+      query += " ORDER BY e.exam_date_time ASC";
 
       const [exams] = await connection.query(query, queryParams);
 
-        const upcomingExams = exams.map(exam => ({
-            ...exam,
-            subjects: exam.subjects ? exam.subjects.split(', ') : []
-        }));
+      const upcomingExams = exams.map((exam) => ({
+        ...exam,
+        subjects: exam.subjects ? exam.subjects.split(", ") : [],
+      }));
 
       res.json({ success: true, data: upcomingExams });
     } catch (err) {
-        console.error('Error fetching scoped exams:', err);
-        res.status(500).json({ success: false, message: 'Server error.' });
+      console.error("Error fetching scoped exams:", err);
+      res.status(500).json({ success: false, message: "Server error." });
     } finally {
       connection.release();
     }
-});
+  }
+);
 
 // --- CBT Student Facing Endpoints ---
 
@@ -745,26 +734,25 @@ router.get(
       );
 
       if (exam.length === 0) {
-        return res
-          .status(404)
-          .json({
-            success: false,
-            message: "No current exam available for you at this time.",
-          });
+        return res.status(404).json({
+          success: false,
+          message: "No current exam available for you at this time.",
+        });
       }
 
       const currentExam = exam[0];
       const examId = currentExam.id;
 
       // Fetch subjects and their questions for the exam
+
       const [questionsFromDb] = await pool.query(
         `
-            SELECT q.id, q.question_text as text, q.options, q.class_subject_id, cs.name as subject_name
-            FROM questions q
-            JOIN class_subjects cs ON q.class_subject_id = cs.id
-            WHERE q.exam_id = ?
-            ORDER BY cs.name
-        `,
+    SELECT q.id, q.question_text as text, q.question_image_url, q.options, q.class_subject_id, cs.name as subject_name
+    FROM questions q
+    JOIN class_subjects cs ON q.class_subject_id = cs.id
+    WHERE q.exam_id = ?
+    ORDER BY cs.name
+  `,
         [examId]
       );
 
@@ -781,6 +769,7 @@ router.get(
         subjects[q.class_subject_id].questions.push({
           id: q.id,
           text: q.text,
+          question_image_url: q.question_image_url || null, // Include image URL
           options: JSON.parse(q.options),
         });
       });
@@ -847,12 +836,10 @@ router.get(
       );
 
       if (exam.length === 0) {
-        return res
-          .status(404)
-          .json({
-            success: false,
-            message: "No upcoming exams found for your class.",
-          });
+        return res.status(404).json({
+          success: false,
+          message: "No upcoming exams found for your class.",
+        });
       }
 
       const examId = exam[0].id;
@@ -900,12 +887,10 @@ router.get(
         [examId]
       );
       if (exams.length === 0) {
-        return res
-          .status(404)
-          .json({
-            success: false,
-            message: "Exam not found for this subject.",
-          });
+        return res.status(404).json({
+          success: false,
+          message: "Exam not found for this subject.",
+        });
       }
 
       const now = new Date();
@@ -922,21 +907,17 @@ router.get(
       );
 
       if (now < allowedStartTime) {
-        return res
-          .status(403)
-          .json({
-            success: false,
-            message: "It is not yet time for the exam.",
-          });
+        return res.status(403).json({
+          success: false,
+          message: "It is not yet time for the exam.",
+        });
       }
 
       if (now > examEndTime) {
-        return res
-          .status(403)
-          .json({
-            success: false,
-            message: "The time for this exam has passed.",
-          });
+        return res.status(403).json({
+          success: false,
+          message: "The time for this exam has passed.",
+        });
       }
 
       const [questionsFromDb] = await pool.query(
@@ -1000,13 +981,11 @@ router.post(
       );
       if (now > examEndTime) {
         await connection.rollback();
-        return res
-          .status(403)
-          .json({
-            success: false,
-            message:
-              "The time for this exam has passed. Submission is no longer accepted.",
-          });
+        return res.status(403).json({
+          success: false,
+          message:
+            "The time for this exam has passed. Submission is no longer accepted.",
+        });
       }
 
       // Check for prior submissions
@@ -1016,12 +995,10 @@ router.post(
       );
       if (existingResult.length > 0) {
         await connection.rollback();
-        return res
-          .status(400)
-          .json({
-            success: false,
-            message: "You have already submitted answers for this exam.",
-          });
+        return res.status(400).json({
+          success: false,
+          message: "You have already submitted answers for this exam.",
+        });
       }
 
       // Fetch all questions for the exam to validate answers and calculate score
@@ -1036,12 +1013,10 @@ router.post(
 
       if (allQuestions.length === 0) {
         await connection.rollback();
-        return res
-          .status(404)
-          .json({
-            success: false,
-            message: "No questions found for this exam.",
-          });
+        return res.status(404).json({
+          success: false,
+          message: "No questions found for this exam.",
+        });
       }
 
       const totalQuestions = allQuestions.length;
@@ -1161,12 +1136,10 @@ router.post(
     } catch (err) {
       await connection.rollback();
       console.error("Error submitting answers:", err);
-      res
-        .status(500)
-        .json({
-          success: false,
-          message: "Server error while submitting answers.",
-        });
+      res.status(500).json({
+        success: false,
+        message: "Server error while submitting answers.",
+      });
     } finally {
       connection.release();
     }
@@ -1202,12 +1175,10 @@ router.get(
           adminStaff.length === 0 ||
           adminStaff[0].branch_id !== exam[0].branch_id
         ) {
-          return res
-            .status(403)
-            .json({
-              success: false,
-              message: "You are not authorized to view results for this exam.",
-            });
+          return res.status(403).json({
+            success: false,
+            message: "You are not authorized to view results for this exam.",
+          });
         }
       }
 
@@ -1231,12 +1202,10 @@ router.get(
       res.json({ success: true, data: results });
     } catch (err) {
       console.error("Error fetching exam results:", err);
-      res
-        .status(500)
-        .json({
-          success: false,
-          message: "Server error while fetching exam results.",
-        });
+      res.status(500).json({
+        success: false,
+        message: "Server error while fetching exam results.",
+      });
     }
   }
 );
@@ -1256,12 +1225,10 @@ router.get(
         [req.user.id]
       );
       if (staff.length === 0) {
-        return res
-          .status(403)
-          .json({
-            success: false,
-            message: "You are not registered as a staff member.",
-          });
+        return res.status(403).json({
+          success: false,
+          message: "You are not registered as a staff member.",
+        });
       }
       const teacherId = staff[0].id;
 
@@ -1270,12 +1237,10 @@ router.get(
         [teacherId]
       );
       if (teacherClasses.length === 0) {
-        return res
-          .status(403)
-          .json({
-            success: false,
-            message: "You are not assigned to any class.",
-          });
+        return res.status(403).json({
+          success: false,
+          message: "You are not assigned to any class.",
+        });
       }
       const teacherClassIds = teacherClasses.map((c) => c.id);
 
@@ -1299,12 +1264,10 @@ router.get(
       res.json({ success: true, data: results });
     } catch (err) {
       console.error("Error fetching exam results for teacher:", err);
-      res
-        .status(500)
-        .json({
-          success: false,
-          message: "Server error while fetching exam results.",
-        });
+      res.status(500).json({
+        success: false,
+        message: "Server error while fetching exam results.",
+      });
     }
   }
 );
@@ -1367,7 +1330,7 @@ router.put(
           "SELECT id FROM staff WHERE user_id = ?",
           [req.user.id]
         );
-        
+
         if (staff.length === 0) {
           await connection.rollback();
           return res.status(403).json({
@@ -1393,13 +1356,19 @@ router.put(
         }
       }
 
-      if (req.user.roles.includes("Admin") && !req.user.roles.includes("SuperAdmin")) {
+      if (
+        req.user.roles.includes("Admin") &&
+        !req.user.roles.includes("SuperAdmin")
+      ) {
         const [adminStaff] = await connection.query(
           "SELECT branch_id FROM staff WHERE user_id = ?",
           [req.user.id]
         );
 
-        if (adminStaff.length === 0 || adminStaff[0].branch_id !== examResult.branch_id) {
+        if (
+          adminStaff.length === 0 ||
+          adminStaff[0].branch_id !== examResult.branch_id
+        ) {
           await connection.rollback();
           return res.status(403).json({
             success: false,
@@ -1409,7 +1378,10 @@ router.put(
       }
 
       // Validate answered_questions against total_questions
-      if (answered_questions < 0 || answered_questions > examResult.total_questions) {
+      if (
+        answered_questions < 0 ||
+        answered_questions > examResult.total_questions
+      ) {
         await connection.rollback();
         return res.status(400).json({
           success: false,
@@ -1498,7 +1470,7 @@ router.put(
           "SELECT id FROM staff WHERE user_id = ?",
           [req.user.id]
         );
-        
+
         if (staff.length === 0) {
           await connection.rollback();
           return res.status(403).json({
@@ -1524,13 +1496,19 @@ router.put(
         }
       }
 
-      if (req.user.roles.includes("Admin") && !req.user.roles.includes("SuperAdmin")) {
+      if (
+        req.user.roles.includes("Admin") &&
+        !req.user.roles.includes("SuperAdmin")
+      ) {
         const [adminStaff] = await connection.query(
           "SELECT branch_id FROM staff WHERE user_id = ?",
           [req.user.id]
         );
 
-        if (adminStaff.length === 0 || adminStaff[0].branch_id !== examResult.branch_id) {
+        if (
+          adminStaff.length === 0 ||
+          adminStaff[0].branch_id !== examResult.branch_id
+        ) {
           await connection.rollback();
           return res.status(403).json({
             success: false,
@@ -1570,7 +1548,9 @@ router.put(
       });
 
       console.log(
-        `Exam result ${resultId} ${published ? "published" : "unpublished"} successfully.`
+        `Exam result ${resultId} ${
+          published ? "published" : "unpublished"
+        } successfully.`
       );
     } catch (err) {
       await connection.rollback();
@@ -1670,13 +1650,19 @@ router.put(
         }
       }
 
-      if (req.user.roles.includes("Admin") && !req.user.roles.includes("SuperAdmin")) {
+      if (
+        req.user.roles.includes("Admin") &&
+        !req.user.roles.includes("SuperAdmin")
+      ) {
         const [adminStaff] = await connection.query(
           "SELECT branch_id FROM staff WHERE user_id = ?",
           [req.user.id]
         );
 
-        if (adminStaff.length === 0 || adminStaff[0].branch_id !== examData.branch_id) {
+        if (
+          adminStaff.length === 0 ||
+          adminStaff[0].branch_id !== examData.branch_id
+        ) {
           await connection.rollback();
           return res.status(403).json({
             success: false,
@@ -1763,12 +1749,10 @@ router.get("/results/me", [auth, authorize(["Student"])], async (req, res) => {
       [branch_id]
     );
     if (terms.length === 0) {
-      return res
-        .status(404)
-        .json({
-          success: false,
-          message: "No active term found for your branch.",
-        });
+      return res.status(404).json({
+        success: false,
+        message: "No active term found for your branch.",
+      });
     }
     const term_id = terms[0].id;
 
@@ -1812,12 +1796,10 @@ router.get("/results/me", [auth, authorize(["Student"])], async (req, res) => {
     res.json({ success: true, data: resultsWithPosition });
   } catch (err) {
     console.error("Error fetching student exam results:", err);
-    res
-      .status(500)
-      .json({
-        success: false,
-        message: "Server error while fetching exam results.",
-      });
+    res.status(500).json({
+      success: false,
+      message: "Server error while fetching exam results.",
+    });
   }
 });
 

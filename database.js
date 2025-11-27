@@ -1119,6 +1119,29 @@ async function initializeDatabase() {
     // Drop and recreate questions table with correct foreign keys
     await connection.query(createQuestionsTable);
     console.log("Questions table recreated with correct schema.");
+
+    // After creating the questions table, add this column check
+try {
+  const [questionColumns] = await connection.query(
+    `
+      SELECT COLUMN_NAME 
+      FROM INFORMATION_SCHEMA.COLUMNS 
+      WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'questions'
+    `,
+    [dbName]
+  );
+
+  const existingQuestionCols = questionColumns.map((row) => row.COLUMN_NAME);
+
+  if (!existingQuestionCols.includes("question_image_url")) {
+    await connection.query(
+      "ALTER TABLE questions ADD COLUMN question_image_url VARCHAR(500) NULL AFTER question_text"
+    );
+    console.log("Added 'question_image_url' column to questions table");
+  }
+} catch (error) {
+  console.log("Error updating questions table:", error.message);
+}
     await connection.query(createExamResultsTable);
     console.log("Exam results table created");
     await connection.query(createTimetablesTable);
