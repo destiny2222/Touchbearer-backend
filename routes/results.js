@@ -25,35 +25,42 @@ async function isClassTeacher(teacherStaffId, classId) {
 }
 
 // Helper function to check if teacher can manage this subject (includes class teacher check)
-async function canTeacherManageSubject(teacherStaffId, subjectId, classId = null) {
+async function canTeacherManageSubject(
+  teacherStaffId,
+  subjectId,
+  classId = null
+) {
   // Check if teacher teaches this specific subject
   const [subjectRows] = await pool.query(
     "SELECT id FROM class_subjects WHERE id = ? AND teacher_id = ?",
     [subjectId, teacherStaffId]
   );
-  
+
   if (subjectRows.length > 0) return true;
-  
+
   // If classId is provided, check if teacher is the class teacher
   if (classId) {
     const isClassTeacherResult = await isClassTeacher(teacherStaffId, classId);
     if (isClassTeacherResult) return true;
   }
-  
+
   // If no classId provided but we have subjectId, get the class_id from subject
   if (subjectId) {
     const [subjectInfo] = await pool.query(
       "SELECT class_id FROM class_subjects WHERE id = ?",
       [subjectId]
     );
-    
+
     if (subjectInfo.length > 0) {
       const subjectClassId = subjectInfo[0].class_id;
-      const isClassTeacherResult = await isClassTeacher(teacherStaffId, subjectClassId);
+      const isClassTeacherResult = await isClassTeacher(
+        teacherStaffId,
+        subjectClassId
+      );
       if (isClassTeacherResult) return true;
     }
   }
-  
+
   return false;
 }
 
@@ -100,7 +107,8 @@ router.post(
     if (!validAssessmentTypes.includes(assessment_type)) {
       return res.status(400).json({
         success: false,
-        message: "Invalid assessment_type. Must be one of: ca1, ca2, ca3, ca4, exam",
+        message:
+          "Invalid assessment_type. Must be one of: ca1, ca2, ca3, ca4, exam",
       });
     }
 
@@ -192,12 +200,13 @@ router.post(
           subject_id,
           class_id
         );
-        
+
         if (!canManage) {
           await connection.rollback();
           return res.status(403).json({
             success: false,
-            message: "You can only save results for subjects you teach or classes you manage.",
+            message:
+              "You can only save results for subjects you teach or classes you manage.",
           });
         }
 
@@ -333,7 +342,8 @@ router.get(
     if (!validTypes.includes(assessment_type)) {
       return res.status(400).json({
         success: false,
-        message: "Invalid assessment_type. Must be one of: ca1, ca2, ca3, ca4, exam",
+        message:
+          "Invalid assessment_type. Must be one of: ca1, ca2, ca3, ca4, exam",
       });
     }
 
@@ -379,11 +389,12 @@ router.get(
           subject_id,
           class_id
         );
-        
+
         if (!canManage) {
           return res.status(403).json({
             success: false,
-            message: "You can only view results for subjects you teach or classes you manage.",
+            message:
+              "You can only view results for subjects you teach or classes you manage.",
           });
         }
       }
@@ -466,9 +477,9 @@ router.get(
 
     const connection = await pool.getConnection();
     try {
-      // 1. Get student_id from logged-in user
+      // 1. Get student_id from logged-in user with full student details
       const [student] = await connection.query(
-        "SELECT id, class_id, branch_id, user_id, parent_id, first_name, last_name FROM students WHERE user_id = ?",
+        "SELECT s.id as id, u.email as email, s.class_id, s.branch_id, s.user_id, s.parent_id, s.first_name, s.last_name, s.gender, s.dob, s.passport FROM students s JOIN users u ON s.user_id = u.id WHERE s.user_id = ?",
         [req.user.id]
       );
       if (student.length === 0) {
@@ -502,7 +513,7 @@ router.get(
 
       // 3. Fetch results for the entire class for the specified term
       let resultsQuery = `
-            SELECT sr.student_id, sr.subject_id, cs.name as subject_name, sr.assessment_type, sr.score
+            SELECT sr.student_id, sr.subject_id, cs.name as subject_name, sr.school_type, sr.assessment_type, sr.score
             FROM student_results sr
             JOIN class_subjects cs ON sr.subject_id = cs.id
             WHERE sr.class_id = ? AND sr.term_id = ? AND sr.published = TRUE
@@ -519,15 +530,24 @@ router.get(
             student: {
               name: `${studentData.first_name} ${studentData.last_name}`,
               class: `${classInfo[0].name} ${classInfo[0].arm || ""}`.trim(),
+              dob: studentData.dob,
+              gender: studentData.gender,
+              passport: studentData.passport,
+              student_id: studentData.email,
             },
             term: {
               name: termInfo[0].name,
               session: termInfo[0].session,
               next_term_begins: termInfo[0].next_term_begins,
+              start_date: termInfo[0].start_date,
+              end_date: termInfo[0].end_date,
             },
             attendance: { school_opened: 0, present: 0, absent: 0 },
             position: "N/A",
             total_students: 0,
+            config: {
+              school_type: allResults[0]?.school_type || "Grade School",
+            },
             results: [],
             skills: { Affective: [], Psychomotor: [] },
             comments: { teacher_comment: "", principal_comment: "" },
@@ -539,9 +559,14 @@ router.get(
 
       // 4. Process the results data
       const resultsByStudent = {};
+      let currentStudentSchoolType = "Grade School";
       allResults.forEach((r) => {
         const studentId = r.student_id;
         const subjectId = r.subject_id;
+
+        if (studentId === student_id && r.school_type) {
+          currentStudentSchoolType = r.school_type;
+        }
         if (!resultsByStudent[studentId]) {
           resultsByStudent[studentId] = { subjects: {}, total_score: 0 };
         }
@@ -637,11 +662,17 @@ router.get(
             student: {
               name: `${studentData.first_name} ${studentData.last_name}`,
               class: `${classInfo[0].name} ${classInfo[0].arm || ""}`.trim(),
+              dob: studentData.dob,
+              gender: studentData.gender,
+              passport: studentData.passport,
+              student_id: studentData.email,
             },
             term: {
               name: termInfo[0].name,
               session: termInfo[0].session,
               next_term_begins: termInfo[0].next_term_begins,
+              start_date: termInfo[0].start_date,
+              end_date: termInfo[0].end_date,
             },
             attendance: { school_opened: 0, present: 0, absent: 0 },
             position: "N/A",
@@ -708,11 +739,20 @@ router.get(
           student: {
             name: `${studentData.first_name} ${studentData.last_name}`,
             class: `${classInfo[0].name} ${classInfo[0].arm || ""}`.trim(),
+            dob: studentData.dob,
+            gender: studentData.gender,
+            passport: studentData.passport,
+            student_id: studentData.email,
           },
           term: {
             name: termInfo[0].name,
             session: termInfo[0].session,
             next_term_begins: termInfo[0].next_term_begins,
+            start_date: termInfo[0].start_date,
+            end_date: termInfo[0].end_date,
+          },
+          config: {
+            school_type: currentStudentSchoolType,
           },
           attendance: {
             school_opened: schoolDays,
@@ -797,15 +837,22 @@ router.get(
         }
 
         // Check if teacher is the class teacher
-        const isClassTeacherResult = await isClassTeacher(staffInfo.id, studentData.class_id);
-        
+        const isClassTeacherResult = await isClassTeacher(
+          staffInfo.id,
+          studentData.class_id
+        );
+
         // Check if teacher teaches any subject in this class
-        const teachesSubject = await isSubjectTeacher4Class(staffInfo.id, studentData.class_id);
+        const teachesSubject = await isSubjectTeacher4Class(
+          staffInfo.id,
+          studentData.class_id
+        );
 
         if (!isClassTeacherResult && !teachesSubject) {
           return res.status(403).json({
             success: false,
-            message: "You can only view results for students in classes you teach or manage.",
+            message:
+              "You can only view results for students in classes you teach or manage.",
           });
         }
       }
@@ -904,11 +951,12 @@ router.delete(
           resultData.subject_id,
           resultData.class_id
         );
-        
+
         if (!canManage) {
           return res.status(403).json({
             success: false,
-            message: "You can only delete results for subjects you teach or classes you manage.",
+            message:
+              "You can only delete results for subjects you teach or classes you manage.",
           });
         }
       }
@@ -1200,14 +1248,21 @@ router.post(
         !req.user.roles.includes("SuperAdmin")
       ) {
         // Check if teacher is class teacher or teaches subjects in this class
-        const isClassTeacherResult = await isClassTeacher(staffInfo.id, studentData.class_id);
-        const teachesSubject = await isSubjectTeacher4Class(staffInfo.id, studentData.class_id);
-        
+        const isClassTeacherResult = await isClassTeacher(
+          staffInfo.id,
+          studentData.class_id
+        );
+        const teachesSubject = await isSubjectTeacher4Class(
+          staffInfo.id,
+          studentData.class_id
+        );
+
         if (!isClassTeacherResult && !teachesSubject) {
           await connection.rollback();
           return res.status(403).json({
             success: false,
-            message: "You can only publish results for students in classes you teach or manage.",
+            message:
+              "You can only publish results for students in classes you teach or manage.",
           });
         }
       }
@@ -1305,7 +1360,8 @@ router.post(
           await connection.rollback();
           return res.status(403).json({
             success: false,
-            message: "Admins can only publish exam results for their own branch.",
+            message:
+              "Admins can only publish exam results for their own branch.",
           });
         }
       }
@@ -1317,14 +1373,21 @@ router.post(
         !req.user.roles.includes("SuperAdmin")
       ) {
         // Check if teacher is class teacher or teaches subjects in this class
-        const isClassTeacherResult = await isClassTeacher(staffInfo.id, studentData.class_id);
-        const teachesSubject = await isSubjectTeacher4Class(staffInfo.id, studentData.class_id);
-        
+        const isClassTeacherResult = await isClassTeacher(
+          staffInfo.id,
+          studentData.class_id
+        );
+        const teachesSubject = await isSubjectTeacher4Class(
+          staffInfo.id,
+          studentData.class_id
+        );
+
         if (!isClassTeacherResult && !teachesSubject) {
           await connection.rollback();
           return res.status(403).json({
             success: false,
-            message: "You can only publish exam results for students in classes you teach or manage.",
+            message:
+              "You can only publish exam results for students in classes you teach or manage.",
           });
         }
       }
@@ -1433,14 +1496,21 @@ router.post(
         !req.user.roles.includes("Admin") &&
         !req.user.roles.includes("SuperAdmin")
       ) {
-        const isClassTeacherResult = await isClassTeacher(staffInfo.id, studentData.class_id);
-        const teachesSubject = await isSubjectTeacher4Class(staffInfo.id, studentData.class_id);
-        
+        const isClassTeacherResult = await isClassTeacher(
+          staffInfo.id,
+          studentData.class_id
+        );
+        const teachesSubject = await isSubjectTeacher4Class(
+          staffInfo.id,
+          studentData.class_id
+        );
+
         if (!isClassTeacherResult && !teachesSubject) {
           await connection.rollback();
           return res.status(403).json({
             success: false,
-            message: "You can only publish results for students in classes you teach or manage.",
+            message:
+              "You can only publish results for students in classes you teach or manage.",
           });
         }
       }
@@ -1473,7 +1543,9 @@ router.post(
           published: {
             student_results: studentResultsUpdate.affectedRows,
             exam_results: examResultsUpdate.affectedRows,
-            total: studentResultsUpdate.affectedRows + examResultsUpdate.affectedRows,
+            total:
+              studentResultsUpdate.affectedRows +
+              examResultsUpdate.affectedRows,
           },
         },
       });
@@ -1703,15 +1775,22 @@ router.get(
           return res
             .status(403)
             .json({ success: false, message: "Staff record not found." });
-        
+
         // Check if teacher is class teacher or teaches subjects in this class
-        const isClassTeacherResult = await isClassTeacher(staffInfo.id, studentData.class_id);
-        const teachesSubject = await isSubjectTeacher4Class(staffInfo.id, studentData.class_id);
-        
+        const isClassTeacherResult = await isClassTeacher(
+          staffInfo.id,
+          studentData.class_id
+        );
+        const teachesSubject = await isSubjectTeacher4Class(
+          staffInfo.id,
+          studentData.class_id
+        );
+
         if (!isClassTeacherResult && !teachesSubject) {
           return res.status(403).json({
             success: false,
-            message: "You can only view results for students in classes you teach or manage.",
+            message:
+              "You can only view results for students in classes you teach or manage.",
           });
         }
       }
@@ -1806,8 +1885,8 @@ router.get(
         const subjectId = r.subject_id;
 
         if (studentId === student_id && r.school_type) {
-    currentStudentSchoolType = r.school_type;
-  }
+          currentStudentSchoolType = r.school_type;
+        }
         if (!resultsByStudent[studentId]) {
           resultsByStudent[studentId] = { subjects: {}, total_score: 0 };
         }
@@ -1976,16 +2055,13 @@ router.get(
           ? comments[0]
           : { teacher_comment: "", principal_comment: "" };
 
-      // Get Config
-      
-
       res.json({
         success: true,
         data: {
           student: {
             name: `${studentData.first_name} ${studentData.last_name}`,
             class: `${classInfo[0].name} ${classInfo[0].arm || ""}`.trim(),
-            dob: studentData.dob, 
+            dob: studentData.dob,
             gender: studentData.gender,
             passport: studentData.passport,
             student_id: studentData.email,
@@ -2004,8 +2080,7 @@ router.get(
           total_students: allStudentTotals.length,
           results: reportCard,
           config: {
-            school_type:
-              currentStudentSchoolType,
+            school_type: currentStudentSchoolType,
           },
           skills: skillsData,
           comments: commentData,
@@ -2047,7 +2122,9 @@ router.post(
     if (!validSchoolTypes.includes(school_type)) {
       return res.status(400).json({
         success: false,
-        message: `Invalid school type. Must be one of: ${validSchoolTypes.join(", ")}`,
+        message: `Invalid school type. Must be one of: ${validSchoolTypes.join(
+          ", "
+        )}`,
       });
     }
 
@@ -2067,7 +2144,10 @@ router.post(
       }
 
       // Authorization check for Admin
-      if (req.user.roles.includes("Admin") && !req.user.roles.includes("SuperAdmin")) {
+      if (
+        req.user.roles.includes("Admin") &&
+        !req.user.roles.includes("SuperAdmin")
+      ) {
         const staffInfo = await getStaffInfo(req.user.id);
         if (staffInfo && staffInfo.branch_id !== student[0].branch_id) {
           return res.status(403).json({
