@@ -15,6 +15,29 @@ async function getStaffInfo(userId) {
   return rows.length > 0 ? rows[0] : null;
 }
 
+
+
+
+async function getAdminBranchId(userId) {
+  const [rows] = await pool.query(
+    "SELECT branch_id FROM staff WHERE user_id = ?",
+    [userId]
+  );
+  return rows.length > 0 ? rows[0].branch_id : null;
+}
+
+
+
+async function isSubjectTeacher4Class(teacherId, classId) {
+  const [rows] = await pool.query(
+    "SELECT * FROM class_subjects WHERE teacher_id = ? AND class_id = ?",
+    [teacherId, classId]
+  );
+  return rows.length > 0;
+}
+
+
+
 // Helper function to check if user is a class teacher
 async function isClassTeacher(teacherStaffId, classId) {
   const [rows] = await pool.query(
@@ -2193,4 +2216,348 @@ router.post(
     }
   }
 );
+
+
+
+// GET /api/results/all - list students with optional report card summary
+router.get(
+  "/all",
+  [auth, authorize(["Admin", "SuperAdmin", "Teacher", "Parent"])],
+  async (req, res) => {
+    const { term_id, include_report_summary } = req.query;
+    const connection = await pool.getConnection();
+    
+    try {
+      // Build base query
+      let query = `
+        SELECT s.id, u.email as student_id, s.first_name, s.last_name, 
+               s.gender, s.dob, s.address, s.nationality, s.state, s.religion, 
+               s.disability, s.passport, c.name AS class_name, c.arm AS class_arm,
+               b.school_name AS branch, b.address AS branch_address,
+               p.name AS parent_name, p.email AS parent_email, p.phone AS parent_phone,
+               s.previous_class, s.last_term_result, s.birth_certificate, s.medical_report,
+               s.class_id, s.branch_id
+        FROM students s
+        JOIN users u ON s.user_id = u.id
+        JOIN classes c ON s.class_id = c.id
+        JOIN branches b ON s.branch_id = b.id
+        JOIN parents p ON s.parent_id = p.id
+        LEFT JOIN student_statuses ss ON s.status_id = ss.id
+        WHERE (ss.name IS NULL OR ss.name = 'Active')
+      `;
+      
+      const params = [];
+      
+      // Authorization: Admin can only see their branch
+      if (req.user.roles.includes("Admin") && !req.user.roles.includes("SuperAdmin")) {
+        const adminBranchId = await getAdminBranchId(req.user.id);
+        if (!adminBranchId) return res.json({ success: true, data: [] });
+        query += " AND s.branch_id = ?";
+        params.push(adminBranchId);
+      }
+      
+      // Authorization: Teacher can only see students they teach
+      if (req.user.roles.includes("Teacher") && 
+          !req.user.roles.includes("Admin") && 
+          !req.user.roles.includes("SuperAdmin")) {
+        const staffInfo = await getStaffInfo(req.user.id);
+        if (!staffInfo) return res.json({ success: true, data: [] });
+        
+        // Get classes the teacher teaches
+        const [teacherClasses] = await connection.query(`
+          SELECT DISTINCT class_id 
+          FROM staff_class_assignments 
+          WHERE staff_id = ? 
+          UNION 
+          SELECT DISTINCT cs.class_id 
+          FROM staff_subject_assignments ssa
+          JOIN class_subjects cs ON ssa.subject_id = cs.id
+          WHERE ssa.staff_id = ?
+        `, [staffInfo.id, staffInfo.id]);
+        
+        if (teacherClasses.length === 0) return res.json({ success: true, data: [] });
+        
+        const classIds = teacherClasses.map(c => c.class_id);
+        query += ` AND s.class_id IN (${classIds.map(() => '?').join(',')})`;
+        params.push(...classIds);
+      }
+      
+      // Authorization: Parent can only see their children
+      if (req.user.roles.includes("Parent")) {
+        const [parent] = await connection.query(
+          "SELECT id FROM parents WHERE user_id = ?",
+          [req.user.id]
+        );
+        if (parent.length === 0) return res.json({ success: true, data: [] });
+        
+        query += " AND s.parent_id = ?";
+        params.push(parent[0].id);
+      }
+      
+      query += " ORDER BY s.first_name ASC, s.last_name ASC";
+      
+      // Execute main query
+      const [students] = await connection.query(query, params);
+      
+      // If term_id and include_report_summary are provided, fetch report card summaries
+      if (term_id && include_report_summary === 'true') {
+        for (const student of students) {
+          try {
+            const summary = await getReportCardSummary(connection, student.id, term_id, req.user);
+            student.summary = summary;
+          } catch (error) {
+            console.error(`Error fetching summary for student ${student.id}:`, error);
+            student.summary = {
+              average_score: 0,
+              overall_grade: "N/A",
+              position: "N/A",
+              teacher_comment: "",
+              principal_comment: "",
+              remark: "No data available"
+            };
+          }
+        }
+      }
+      
+      // Format the response to match your frontend types
+      const formattedStudents = students.map(student => ({
+        id: student.id.toString(),
+        first_name: student.first_name,
+        last_name: student.last_name,
+        class_name: student.class_name,
+        name: `${student.first_name} ${student.last_name}`,
+        class: `${student.class_name} ${student.class_arm || ''}`.trim(),
+        student_id: student.student_id,
+        ...(student.summary && { summary: student.summary })
+      }));
+      
+      return res.json({ 
+        success: true, 
+        data: formattedStudents 
+      });
+      
+    } catch (err) {
+      console.error("List students error:", err);
+      return res.status(500).json({
+        success: false,
+        message: "Server error while fetching students.",
+      });
+    } finally {
+      if (connection) connection.release();
+    }
+  }
+);
+
+// Helper function to get report card summary
+async function getReportCardSummary(connection, studentId, termId, user) {
+  const SUBJECT_MAX_SCORE = 100;
+
+  /* --------------------------------------------------
+   * 1. Fetch student results (respect publication)
+   * -------------------------------------------------- */
+  let resultsQuery = `
+    SELECT 
+      sr.student_id,
+      sr.subject_id,
+      sr.assessment_type,
+      sr.score,
+      sr.published
+    FROM student_results sr
+    WHERE sr.student_id = ? AND sr.term_id = ?
+  `;
+
+  if (user.roles.includes("Student") || user.roles.includes("Parent")) {
+    resultsQuery += " AND sr.published = TRUE";
+  }
+
+  const [results] = await connection.query(resultsQuery, [studentId, termId]);
+
+  if (results.length === 0) {
+    return {
+      total_score: 0,
+      total_obtainable: 0,
+      percentage: 0,
+      overall_grade: "N/A",
+      position: "N/A",
+      teacher_comment: "",
+      principal_comment: "",
+      remark: "No results found for this term"
+    };
+  }
+
+  /* --------------------------------------------------
+   * 2. Get student's class
+   * -------------------------------------------------- */
+  const [studentClass] = await connection.query(
+    "SELECT class_id FROM students WHERE id = ?",
+    [studentId]
+  );
+
+  if (studentClass.length === 0) {
+    return {
+      total_score: 0,
+      total_obtainable: 0,
+      percentage: 0,
+      overall_grade: "N/A",
+      position: "N/A",
+      teacher_comment: "",
+      principal_comment: "",
+      remark: "Student class not found"
+    };
+  }
+
+  const classId = studentClass[0].class_id;
+
+  /* --------------------------------------------------
+   * 3. Aggregate student's subject totals
+   * -------------------------------------------------- */
+  const studentSubjects = {};
+  let studentTotalScore = 0;
+
+  results.forEach(r => {
+    if (!studentSubjects[r.subject_id]) {
+      studentSubjects[r.subject_id] = {
+        ca1: 0, ca2: 0, ca3: 0, ca4: 0, exam: 0
+      };
+    }
+
+    studentSubjects[r.subject_id][r.assessment_type] = parseFloat(r.score);
+  });
+
+  Object.values(studentSubjects).forEach(subject => {
+    studentTotalScore +=
+      (subject.ca1 || 0) +
+      (subject.ca2 || 0) +
+      (subject.ca3 || 0) +
+      (subject.ca4 || 0) +
+      (subject.exam || 0);
+  });
+
+  const subjectCount = Object.keys(studentSubjects).length;
+  const totalObtainable = subjectCount * SUBJECT_MAX_SCORE;
+
+  const percentage =
+    totalObtainable > 0
+      ? (studentTotalScore / totalObtainable) * 100
+      : 0;
+
+  /* --------------------------------------------------
+   * 4. Determine overall grade
+   * -------------------------------------------------- */
+  let overallGrade = "F";
+
+  if (percentage >= 75) overallGrade = "A";
+  else if (percentage >= 65) overallGrade = "B";
+  else if (percentage >= 50) overallGrade = "C";
+  else if (percentage >= 45) overallGrade = "D";
+  else if (percentage >= 40) overallGrade = "E";
+
+  /* --------------------------------------------------
+   * 5. Fetch class results for position calculation
+   * -------------------------------------------------- */
+  const [classResults] = await connection.query(
+    `
+    SELECT 
+      sr.student_id,
+      sr.subject_id,
+      sr.assessment_type,
+      sr.score
+    FROM student_results sr
+    WHERE sr.class_id = ? AND sr.term_id = ?
+    ${user.roles.includes("Student") || user.roles.includes("Parent")
+      ? "AND sr.published = TRUE"
+      : ""}
+    `,
+    [classId, termId]
+  );
+
+  const classTotals = {};
+
+  classResults.forEach(r => {
+    if (!classTotals[r.student_id]) {
+      classTotals[r.student_id] = {
+        subjects: {},
+        total_score: 0
+      };
+    }
+
+    if (!classTotals[r.student_id].subjects[r.subject_id]) {
+      classTotals[r.student_id].subjects[r.subject_id] = {
+        ca1: 0, ca2: 0, ca3: 0, ca4: 0, exam: 0
+      };
+    }
+
+    classTotals[r.student_id].subjects[r.subject_id][r.assessment_type] =
+      (classTotals[r.student_id].subjects[r.subject_id][r.assessment_type] || 0)
+      + parseFloat(r.score);
+  });
+
+  Object.values(classTotals).forEach(student => {
+    Object.values(student.subjects).forEach(subject => {
+      student.total_score +=
+        (subject.ca1 || 0) +
+        (subject.ca2 || 0) +
+        (subject.ca3 || 0) +
+        (subject.ca4 || 0) +
+        (subject.exam || 0);
+    });
+  });
+
+  const sortedStudents = Object.entries(classTotals)
+    .sort(([, a], [, b]) => b.total_score - a.total_score);
+
+  const studentRank =
+    sortedStudents.findIndex(([sId]) => sId == studentId) + 1;
+
+  const position = studentRank > 0 ? getOrdinal(studentRank) : "N/A";
+
+  /* --------------------------------------------------
+   * 6. Fetch teacher & principal comments
+   * -------------------------------------------------- */
+  const [comments] = await connection.query(
+    `
+    SELECT teacher_comment, principal_comment
+    FROM report_card_comments
+    WHERE student_id = ? AND term_id = ?
+    `,
+    [studentId, termId]
+  );
+
+  const commentData = comments.length
+    ? comments[0]
+    : { teacher_comment: "", principal_comment: "" };
+
+  /* --------------------------------------------------
+   * 7. Determine remark
+   * -------------------------------------------------- */
+  let remark = "Needs Improvement";
+  if (overallGrade === "A") remark = "Excellent";
+  else if (overallGrade === "B") remark = "Very Good";
+  else if (overallGrade === "C") remark = "Good";
+  else if (overallGrade === "D") remark = "Fair";
+  else if (overallGrade === "E") remark = "Pass";
+
+  /* --------------------------------------------------
+   * 8. Final response
+   * -------------------------------------------------- */
+  return {
+    total_score: studentTotalScore,
+    total_obtainable: totalObtainable,
+    percentage: parseFloat(percentage.toFixed(2)),
+    overall_grade: overallGrade,
+    position,
+    teacher_comment: commentData.teacher_comment || "",
+    principal_comment: commentData.principal_comment || "",
+    remark
+  };
+}
+
+function getOrdinal(n) {
+  const s = ["th", "st", "nd", "rd"];
+  const v = n % 100;
+  return n + (s[(v - 20) % 10] || s[v] || s[0]);
+}
+
+
+
 module.exports = router;
