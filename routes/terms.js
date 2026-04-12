@@ -180,6 +180,86 @@ router.get('/current', auth, async (req, res) => {
 });
 
 
+// DELETE /api/terms/:id - Delete a term
+router.delete('/:id', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => {
+    const { id } = req.params;
+
+    const connection = await pool.getConnection();
+    try {
+        await connection.beginTransaction();
+
+        const [terms] = await connection.query('SELECT * FROM terms WHERE id = ?', [id]);
+        if (terms.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ success: false, message: 'Term not found.' });
+        }
+        const term = terms[0];
+
+        if (req.user.roles.includes('Admin')) {
+            const adminBranchId = await getAdminBranchId(req.user.id);
+            if (term.branch_id !== adminBranchId) {
+                await connection.rollback();
+                return res.status(403).json({ success: false, message: 'Admins can only delete terms for their own branch.' });
+            }
+        }
+
+        await connection.query('DELETE FROM terms WHERE id = ?', [id]);
+
+        await connection.commit();
+        res.json({ success: true, message: 'Term deleted successfully.' });
+    } catch (error) {
+        await connection.rollback();
+        console.error('Delete term error:', error);
+        res.status(500).json({ success: false, message: 'Server error while deleting term.' });
+    } finally {
+        connection.release();
+    }
+});
+
+// PATCH /api/terms/:id/activate - Activate a specific term (deactivates others)
+router.patch('/:id/activate', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => {
+    const { id } = req.params;
+
+    const connection = await pool.getConnection();
+    try {
+        await connection.beginTransaction();
+
+        const [terms] = await connection.query('SELECT * FROM terms WHERE id = ?', [id]);
+        if (terms.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ success: false, message: 'Term not found.' });
+        }
+        const term = terms[0];
+
+        if (req.user.roles.includes('Admin')) {
+            const adminBranchId = await getAdminBranchId(req.user.id);
+            if (term.branch_id !== adminBranchId) {
+                await connection.rollback();
+                return res.status(403).json({ success: false, message: 'Admins can only activate terms for their own branch.' });
+            }
+        }
+
+        if (term.branch_id) {
+            await connection.query('UPDATE terms SET is_active = FALSE WHERE branch_id = ?', [term.branch_id]);
+        } else {
+            await connection.query('UPDATE terms SET is_active = FALSE WHERE branch_id IS NULL');
+        }
+
+        await connection.query('UPDATE terms SET is_active = TRUE WHERE id = ?', [id]);
+
+        await connection.commit();
+
+        const [updatedTerms] = await pool.query('SELECT * FROM terms WHERE id = ?', [id]);
+        res.json({ success: true, message: 'Term activated successfully.', data: updatedTerms[0] });
+    } catch (error) {
+        await connection.rollback();
+        console.error('Activate term error:', error);
+        res.status(500).json({ success: false, message: 'Server error while activating term.' });
+    } finally {
+        connection.release();
+    }
+});
+
 // PUT /api/terms/:id - Update a term
 router.put('/:id', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => {
     const { id } = req.params;
