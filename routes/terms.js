@@ -38,10 +38,10 @@ router.get('/', auth, async (req, res) => {
 
 // POST /api/terms/new - Trigger a new term (reset payment statuses but keep history)
 router.post('/new', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => {
-    const { name, session, start_date, end_date, branch_id, next_term_begins } = req.body; // session, branch_id, and next_term_begins are optional
+    const { name, session, start_date, end_date, branch_id, next_term_begins } = req.body;
 
-    if (!name || !start_date || !end_date) {
-        return res.status(400).json({ success: false, message: 'Missing required fields.' });
+    if (!name || !session || !start_date || !end_date) {
+        return res.status(400).json({ success: false, message: 'Missing required fields: name, session, start_date, and end_date are required.' });
     }
 
     const connection = await pool.getConnection();
@@ -63,6 +63,20 @@ router.post('/new', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res)
             termBranchId = adminBranchId; // Force the term to be for the admin's branch
         }
 
+        // Check for unique term: name + session combination within the same branch
+        const existingTermQuery = termBranchId
+            ? 'SELECT id FROM terms WHERE name = ? AND session = ? AND branch_id = ?'
+            : 'SELECT id FROM terms WHERE name = ? AND session = ? AND branch_id IS NULL';
+        const existingTermParams = termBranchId
+            ? [name, session, termBranchId]
+            : [name, session];
+        
+        const [existingTerms] = await connection.query(existingTermQuery, existingTermParams);
+        if (existingTerms.length > 0) {
+            await connection.rollback();
+            return res.status(400).json({ success: false, message: `A term with name "${name}" for session "${session}" already exists in this branch.` });
+        }
+
         // Deactivate all other terms in the same branch, or all global terms if this is a global term
         if (termBranchId) {
             await connection.query('UPDATE terms SET is_active = FALSE WHERE branch_id = ?', [termBranchId]);
@@ -75,7 +89,7 @@ router.post('/new', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res)
         const newTerm = {
             id: newTermId,
             name,
-            session: session || null,
+            session,
             branch_id: termBranchId || null,
             start_date,
             end_date,
@@ -290,6 +304,23 @@ router.put('/:id', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) 
                 await connection.rollback();
                 return res.status(403).json({ success: false, message: 'Admins can only edit terms for their own branch.' });
             }
+        }
+
+        // Check for unique term: name + session combination within the same branch (excluding current term)
+        const newName = name || term.name;
+        const newSession = session !== undefined ? session : term.session;
+        
+        const uniqueCheckQuery = term.branch_id
+            ? 'SELECT id FROM terms WHERE name = ? AND session = ? AND branch_id = ? AND id != ?'
+            : 'SELECT id FROM terms WHERE name = ? AND session = ? AND branch_id IS NULL AND id != ?';
+        const uniqueCheckParams = term.branch_id
+            ? [newName, newSession, term.branch_id, id]
+            : [newName, newSession, id];
+        
+        const [duplicateTerms] = await connection.query(uniqueCheckQuery, uniqueCheckParams);
+        if (duplicateTerms.length > 0) {
+            await connection.rollback();
+            return res.status(400).json({ success: false, message: `A term with name "${newName}" for session "${newSession || 'N/A'}" already exists in this branch.` });
         }
         
         // If is_active is being set to true, deactivate other terms in the same branch/scope
