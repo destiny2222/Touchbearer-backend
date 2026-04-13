@@ -257,12 +257,16 @@ router.post(
         }
       }
 
-      // Get active term for the branch
-      const [activeTerm] = await connection.query(
-        "SELECT id FROM terms WHERE is_active = TRUE AND (branch_id = ? OR branch_id IS NULL) ORDER BY branch_id DESC LIMIT 1",
-        [branch_id]
-      );
-      const term_id = activeTerm.length > 0 ? activeTerm[0].id : null;
+      // Get term_id from body or use active term for the branch
+      let term_id = req.body.term_id || null;
+      
+      if (!term_id) {
+        const [activeTerm] = await connection.query(
+          "SELECT id FROM terms WHERE is_active = TRUE AND (branch_id = ? OR branch_id IS NULL) ORDER BY branch_id DESC LIMIT 1",
+          [branch_id]
+        );
+        term_id = activeTerm.length > 0 ? activeTerm[0].id : null;
+      }
 
       // Verify all students exist and belong to the class
       const studentIds = scores.map((s) => s.student_id);
@@ -347,12 +351,13 @@ router.post(
 
 // GET /api/results/class/:class_id/subject/:subject_id - Get results for a class and subject, including students without scores
 // Requires query param: assessment_type (ca1, ca2, ca3, 'ca4', exam)
+// Optional query param: term_id (if not provided, uses active term)
 router.get(
   "/class/:class_id/subject/:subject_id",
   [auth, authorize(["Teacher", "Admin", "SuperAdmin"])],
   async (req, res) => {
     const { class_id, subject_id } = req.params;
-    const { assessment_type } = req.query;
+    const { assessment_type, term_id: queryTermId } = req.query;
 
     if (!assessment_type) {
       return res.status(400).json({
@@ -434,17 +439,21 @@ router.get(
         }
       }
 
-      // Get active term
-      const [activeTerm] = await pool.query(
-        "SELECT id FROM terms WHERE is_active = TRUE AND (branch_id = ? OR branch_id IS NULL) ORDER BY branch_id DESC LIMIT 1",
-        [branch_id]
-      );
-      const term_id = activeTerm.length > 0 ? activeTerm[0].id : null;
+      // Get term_id from query param or use active term
+      let term_id = queryTermId || null;
+      
+      if (!term_id) {
+        const [activeTerm] = await pool.query(
+          "SELECT id FROM terms WHERE is_active = TRUE AND (branch_id = ? OR branch_id IS NULL) ORDER BY branch_id DESC LIMIT 1",
+          [branch_id]
+        );
+        term_id = activeTerm.length > 0 ? activeTerm[0].id : null;
+      }
 
       if (!term_id) {
         return res.status(404).json({
           success: false,
-          message: "No active term found for this branch.",
+          message: "No term found. Please provide a valid term_id or ensure there's an active term.",
         });
       }
 
@@ -802,11 +811,13 @@ router.get(
 );
 
 // GET /api/results/student/:student_id - Get all results for a specific student
+// Optional query param: term_id (if not provided, uses active term)
 router.get(
   "/student/:student_id",
   [auth, authorize(["Teacher", "Admin", "SuperAdmin", "Student", "Parent"])],
   async (req, res) => {
     const { student_id } = req.params;
+    const { term_id: queryTermId } = req.query;
 
     try {
       // Verify student exists
@@ -893,12 +904,16 @@ router.get(
         }
       }
 
-      // Get active term
-      const [activeTerm] = await pool.query(
-        "SELECT id FROM terms WHERE is_active = TRUE AND (branch_id = ? OR branch_id IS NULL) ORDER BY branch_id DESC LIMIT 1",
-        [studentData.branch_id]
-      );
-      const term_id = activeTerm.length > 0 ? activeTerm[0].id : null;
+      // Get term_id from query param or use active term
+      let term_id = queryTermId || null;
+      
+      if (!term_id) {
+        const [activeTerm] = await pool.query(
+          "SELECT id FROM terms WHERE is_active = TRUE AND (branch_id = ? OR branch_id IS NULL) ORDER BY branch_id DESC LIMIT 1",
+          [studentData.branch_id]
+        );
+        term_id = activeTerm.length > 0 ? activeTerm[0].id : null;
+      }
 
       // Fetch results
       const query = `
@@ -1593,12 +1608,14 @@ router.get(
     const {
       session,
       term,
+      term_id,
       class: className,
       arm,
       published_only,
       class_id,
       subject_id,
       assessment_type,
+      sort_by,
     } = req.query;
 
     try {
@@ -1672,6 +1689,11 @@ router.get(
         queryParams.push(term);
       }
 
+      if (term_id) {
+        query += " AND sr.term_id = ?";
+        queryParams.push(term_id);
+      }
+
       if (className) {
         query += " AND c.name = ?";
         queryParams.push(className);
@@ -1701,8 +1723,41 @@ router.get(
         query += " AND sr.published = TRUE";
       }
 
-      query +=
-        " ORDER BY s.last_name ASC, s.first_name ASC, cs.name ASC, sr.assessment_type ASC";
+      // Apply sorting
+      let orderByClause = " ORDER BY s.last_name ASC, s.first_name ASC, cs.name ASC, sr.assessment_type ASC";
+      
+      if (sort_by) {
+        const validSortFields = ['term_name', 'session', 'class_name', 'subject_name', 'last_name', 'first_name', 'score', 'assessment_type', 'created_at'];
+        const sortFields = sort_by.split(',').map(f => f.trim());
+        
+        const orderParts = [];
+        for (const field of sortFields) {
+          const parts = field.split(':');
+          const fieldName = parts[0];
+          const direction = parts[1]?.toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
+          
+          if (validSortFields.includes(fieldName)) {
+            const fieldMap = {
+              'term_name': 't.name',
+              'session': 't.session',
+              'class_name': 'c.name',
+              'subject_name': 'cs.name',
+              'last_name': 's.last_name',
+              'first_name': 's.first_name',
+              'score': 'sr.score',
+              'assessment_type': 'sr.assessment_type',
+              'created_at': 'sr.created_at'
+            };
+            orderParts.push(`${fieldMap[fieldName]} ${direction}`);
+          }
+        }
+        
+        if (orderParts.length > 0) {
+          orderByClause = " ORDER BY " + orderParts.join(', ');
+        }
+      }
+      
+      query += orderByClause;
 
       const [results] = await pool.query(query, queryParams);
 
@@ -1712,12 +1767,14 @@ router.get(
         filters: {
           session: session || null,
           term: term || null,
+          term_id: term_id || null,
           class: className || null,
           arm: arm || null,
           published_only: published_only === "true",
           class_id: class_id || null,
           subject_id: subject_id || null,
           assessment_type: assessment_type || null,
+          sort_by: sort_by || null,
         },
         data: { results },
       };
