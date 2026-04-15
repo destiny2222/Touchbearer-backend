@@ -193,6 +193,27 @@ router.get('/current', auth, async (req, res) => {
     }
 });
 
+// GET /api/terms/:id - Get a specific term by ID
+router.get('/:id', auth, async (req, res) => {
+    try {
+        const { id } = req.params;
+        
+        const [terms] = await pool.query('SELECT * FROM terms WHERE id = ?', [id]);
+        
+        if (terms.length === 0) {
+            return res.status(404).json({ success: false, message: 'Term not found.' });
+        }
+
+        res.json({
+            success: true,
+            data: terms[0]
+        });
+    } catch (error) {
+        console.error('Get term by ID error:', error);
+        res.status(500).json({ success: false, message: 'Server error while retrieving term.' });
+    }
+});
+
 
 // DELETE /api/terms/:id - Delete a term
 router.delete('/:id', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => {

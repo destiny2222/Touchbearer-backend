@@ -702,9 +702,10 @@ router.get(
             term: {
               name: termInfo[0].name,
               session: termInfo[0].session,
-              next_term_begins: termInfo[0].next_term_begins,
+              current_term: termInfo[0].name,
               start_date: termInfo[0].start_date,
               end_date: termInfo[0].end_date,
+              next_term_begins: termInfo[0].next_term_begins,
             },
             attendance: { school_opened: 0, present: 0, absent: 0 },
             position: "N/A",
@@ -776,13 +777,15 @@ router.get(
             passport: studentData.passport,
             student_id: studentData.email,
           },
-          term: {
-            name: termInfo[0].name,
-            session: termInfo[0].session,
-            next_term_begins: termInfo[0].next_term_begins,
-            start_date: termInfo[0].start_date,
-            end_date: termInfo[0].end_date,
-          },
+            term: {
+              name: termInfo[0].name,
+              session: termInfo[0].session,
+              current_term: termInfo[0].name,
+              start_date: termInfo[0].start_date,
+              end_date: termInfo[0].end_date,
+              next_term: nextTerm.length > 0 ? nextTerm[0].start_date : null,
+              next_term_name: nextTerm.length > 0 ? nextTerm[0].name : null,
+            },
           config: {
             school_type: currentStudentSchoolType,
           },
@@ -1889,7 +1892,7 @@ router.get(
 
       // 2. Get Term and Class Info
       const [termInfo] = await connection.query(
-        "SELECT name, session, start_date, end_date, next_term_begins FROM terms WHERE id = ?",
+        "SELECT id, name, session, start_date, end_date, next_term_begins FROM terms WHERE id = ?",
         [term_id]
       );
       if (termInfo.length === 0) {
@@ -1897,6 +1900,7 @@ router.get(
           .status(404)
           .json({ success: false, message: "Term not found." });
       }
+      const currentTerm = termInfo[0];
       const [classInfo] = await connection.query(
         "SELECT name, arm FROM classes WHERE id = ?",
         [studentData.class_id]
@@ -1905,6 +1909,66 @@ router.get(
         return res.status(404).json({
           success: false,
           message: "Class not found for this student.",
+        });
+      }
+
+      const termOrder = { "First Term": 1, "Second Term": 2, "Third Term": 3 };
+      const currentTermOrder = termOrder[currentTerm.name] || 0;
+
+      const [previousTerms] = await connection.query(
+        `SELECT id, name, session FROM terms 
+         WHERE session = ? AND id != ? 
+         AND (CASE name 
+           WHEN 'First Term' THEN 1 
+           WHEN 'Second Term' THEN 2 
+           WHEN 'Third Term' THEN 3 
+           ELSE 0 END) < ? 
+         ORDER BY CASE name 
+           WHEN 'First Term' THEN 1 
+           WHEN 'Second Term' THEN 2 
+           WHEN 'Third Term' THEN 3 
+           ELSE 4 END`,
+        [currentTerm.session, term_id, currentTermOrder]
+      );
+
+      const [nextTerm] = await connection.query(
+        `SELECT id, name, session, start_date FROM terms 
+         WHERE session = ? AND id != ? 
+         AND (CASE name 
+           WHEN 'First Term' THEN 1 
+           WHEN 'Second Term' THEN 2 
+           WHEN 'Third Term' THEN 3 
+           ELSE 0 END) > ? 
+         ORDER BY CASE name 
+           WHEN 'First Term' THEN 1 
+           WHEN 'Second Term' THEN 2 
+           WHEN 'Third Term' THEN 3 
+           ELSE 4 END 
+         LIMIT 1`,
+        [currentTerm.session, term_id, currentTermOrder]
+      );
+
+      const cumulativeResultsBySubject = {};
+      if (previousTerms.length > 0) {
+        const [prevResults] = await connection.query(
+          `SELECT sr.term_id, sr.subject_id, cs.name as subject_name, 
+                  sr.assessment_type, sr.score
+           FROM student_results sr
+           JOIN class_subjects cs ON sr.subject_id = cs.id
+           WHERE sr.student_id = ? AND sr.term_id IN (?)`,
+          [student_id, previousTerms.map((t) => t.id)]
+        );
+
+        prevResults.forEach((r) => {
+          const subjectId = r.subject_id;
+          if (!cumulativeResultsBySubject[subjectId]) {
+            cumulativeResultsBySubject[subjectId] = {
+              subject_name: r.subject_name,
+              total: 0,
+            };
+          }
+          const score = parseFloat(r.score) || 0;
+          cumulativeResultsBySubject[subjectId].total += score;
         });
       }
 
@@ -1928,6 +1992,12 @@ router.get(
       const [allResults] = await connection.query(resultsQuery, queryParams);
 
       if (allResults.length === 0) {
+        const cumulativeData = Object.values(cumulativeResultsBySubject).map(
+          (subj) => ({
+            subject: subj.subject_name,
+            cumulative_total: subj.total,
+          })
+        );
         return res.status(200).json({
           success: true,
           data: {
@@ -1947,10 +2017,17 @@ router.get(
             total_students: 0,
             results: [],
             config: {
-              school_type: resultsQuery[0]?.school_type || "Grade School",
+              school_type: "Grade School",
             },
             skills: { Affective: [], Psychomotor: [] },
             comments: { teacher_comment: "", principal_comment: "" },
+            cumulative: {
+              previous_terms: previousTerms.map((t) => t.name),
+              results: cumulativeData,
+              total_cumulative:
+                cumulativeData.reduce((sum, r) => sum + r.cumulative_total, 0) ||
+                null,
+            },
           },
           message:
             "No published results found for this student in the selected term.",
@@ -2037,6 +2114,9 @@ router.get(
         else if (studentTotal >= 45) grade = "D";
         else if (studentTotal >= 40) grade = "E";
 
+        const prevTermCumulative = cumulativeResultsBySubject[subject.id]?.total || 0;
+        const grandTotal = studentTotal + prevTermCumulative;
+
         reportCard.push({
           subject: subject.name,
           ca1: studentSubjectData.ca1 || 0,
@@ -2050,6 +2130,8 @@ router.get(
           highest: highest,
           lowest: lowest,
           average: parseFloat(average.toFixed(2)),
+          cumulative_from_previous_terms: prevTermCumulative,
+          grand_total: grandTotal,
         });
       }
 
@@ -2061,6 +2143,12 @@ router.get(
 
       // Handle case where the student has no results, so they don't appear in the processed list.
       if (!resultsByStudent[student_id]) {
+        const cumulativeData = Object.values(cumulativeResultsBySubject).map(
+          (subj) => ({
+            subject: subj.subject_name,
+            cumulative_total: subj.total,
+          })
+        );
         return res.status(200).json({
           success: true,
           data: {
@@ -2071,17 +2159,32 @@ router.get(
             term: {
               name: termInfo[0].name,
               session: termInfo[0].session,
+              current_term: termInfo[0].name,
+              start_date: termInfo[0].start_date,
+              end_date: termInfo[0].end_date,
+              next_term: nextTerm.length > 0 ? nextTerm[0].start_date : null,
+              next_term_name: nextTerm.length > 0 ? nextTerm[0].name : null,
               next_term_begins: termInfo[0].next_term_begins,
             },
             attendance: { school_opened: 0, present: 0, absent: 0 },
             position: "N/A",
             total_students: 0,
             results: [],
+            config: {
+              school_type: "Grade School",
+            },
             skills: { Affective: [], Psychomotor: [] },
             comments: { teacher_comment: "", principal_comment: "" },
+            cumulative: {
+              previous_terms: previousTerms.map((t) => t.name),
+              results: cumulativeData,
+              total_cumulative:
+                cumulativeData.reduce((sum, r) => sum + r.cumulative_total, 0) ||
+                null,
+            },
           },
           message:
-            "No results found for this student in the selected term to generate a report card.",
+            "No published results found for this student in the selected term.",
         });
       }
 
@@ -2135,6 +2238,19 @@ router.get(
           ? comments[0]
           : { teacher_comment: "", principal_comment: "" };
 
+      const cumulativeData = Object.values(cumulativeResultsBySubject).map(
+        (subj) => ({
+          subject: subj.subject_name,
+          cumulative_total: subj.total,
+        })
+      );
+      const totalCumulative = cumulativeData.reduce(
+        (sum, r) => sum + r.cumulative_total,
+        0
+      );
+      const grandTotalScore =
+        resultsByStudent[student_id].total_score + totalCumulative;
+
       res.json({
         success: true,
         data: {
@@ -2149,6 +2265,11 @@ router.get(
           term: {
             name: termInfo[0].name,
             session: termInfo[0].session,
+            current_term: termInfo[0].name,
+            start_date: termInfo[0].start_date,
+            end_date: termInfo[0].end_date,
+            next_term: nextTerm.length > 0 ? nextTerm[0].start_date : null,
+            next_term_name: nextTerm.length > 0 ? nextTerm[0].name : null,
             next_term_begins: termInfo[0].next_term_begins,
           },
           attendance: {
@@ -2164,6 +2285,12 @@ router.get(
           },
           skills: skillsData,
           comments: commentData,
+          cumulative: {
+            previous_terms: previousTerms.map((t) => t.name),
+            results: cumulativeData,
+            total_cumulative: totalCumulative || null,
+            grand_total: grandTotalScore || null,
+          },
         },
       });
     } catch (err) {
