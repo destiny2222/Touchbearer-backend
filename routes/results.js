@@ -509,15 +509,27 @@ router.get(
 
     const connection = await pool.getConnection();
     try {
-      // 1. Get student_id from logged-in user with full student details
-      const [student] = await connection.query(
-        "SELECT s.id as id, u.email as email, s.class_id, s.branch_id, s.user_id, s.parent_id, s.first_name, s.last_name, s.gender, s.dob, s.passport FROM students s JOIN users u ON s.user_id = u.id WHERE s.user_id = ?",
-        [req.user.id]
-      );
+      // 1. Resolve student from logged-in user
+      let studentLookupQuery;
+      let studentLookupParams;
+
+      if (req.user.roles.includes("Student")) {
+        studentLookupQuery =
+          "SELECT s.id as id, u.email as email, s.class_id, s.branch_id, s.user_id, s.parent_id, s.first_name, s.last_name, s.gender, s.dob, s.passport FROM students s JOIN users u ON s.user_id = u.id WHERE s.user_id = ?";
+        studentLookupParams = [req.user.id];
+      } else if (req.user.roles.includes("Parent")) {
+        // For parents hitting /me, we still need a student_id query param
+        // since a parent can have multiple children — return an error directing them
+        // to use the /student/:student_id/report-card endpoint instead.
+        return res.status(400).json({
+          success: false,
+          message: "Parents must use /student/:student_id/report-card to view a child's report card.",
+        });
+      }
+
+      const [student] = await connection.query(studentLookupQuery, studentLookupParams);
       if (student.length === 0) {
-        return res
-          .status(404)
-          .json({ success: false, message: "Student not found." });
+        return res.status(404).json({ success: false, message: "Student not found." });
       }
       const studentData = student[0];
       const student_id = studentData.id;
@@ -528,26 +540,18 @@ router.get(
         [term_id]
       );
       if (termInfo.length === 0) {
-        return res
-          .status(404)
-          .json({ success: false, message: "Term not found." });
+        return res.status(404).json({ success: false, message: "Term not found." });
       }
       const currentTerm = termInfo[0];
-      const [classInfo] = await connection.query(
-        "SELECT name, arm FROM classes WHERE id = ?",
-        [studentData.class_id]
-      );
+
+      // Current student's class (used for auth/display fallback)
+      const [classInfo] = await connection.query("SELECT name, arm FROM classes WHERE id = ?", [studentData.class_id]);
       if (classInfo.length === 0) {
-        return res.status(404).json({
-          success: false,
-          message: "Class not found for this student.",
-        });
+        return res.status(404).json({ success: false, message: "Class not found for this student." });
       }
 
       const termOrder = { "First Term": 1, "Second Term": 2, "Third Term": 3 };
       const currentTermOrder = termOrder[currentTerm.name] || 0;
-
-      const cumulativeTermsData = [];
 
       const [previousTerms] = await connection.query(
         `SELECT id, name, session FROM terms 
@@ -578,52 +582,90 @@ router.get(
            WHEN 'Second Term' THEN 2 
            WHEN 'Third Term' THEN 3 
            ELSE 4 END 
-           LIMIT 1`,
+         LIMIT 1`,
         [currentTerm.session, term_id, currentTermOrder]
       );
 
       const previousTermIds = previousTerms.map((t) => t.id);
-      const cumulativeTermsDataTemp = [];
-      const cumulativeResultsBySubject = {};
-      if (previousTerms.length > 0) {
-        const [prevResults] = await connection.query(
-          `SELECT sr.term_id, sr.subject_id, cs.name as subject_name, 
-                  sr.assessment_type, sr.score
-           FROM student_results sr
-           JOIN class_subjects cs ON sr.subject_id = cs.id
-           WHERE sr.student_id = ? AND sr.term_id IN (?)`,
-          [student_id, previousTermIds]
-        );
 
-        prevResults.forEach((r) => {
-          const subjectId = r.subject_id;
-          const termId = r.term_id;
-          if (!cumulativeResultsBySubject[subjectId]) {
-            cumulativeResultsBySubject[subjectId] = {
-              subject_name: r.subject_name,
-              scores_by_term: {},
-            };
-          }
-          const score = parseFloat(r.score) || 0;
-          if (!cumulativeResultsBySubject[subjectId].scores_by_term[termId]) {
-            cumulativeResultsBySubject[subjectId].scores_by_term[termId] = 0;
-          }
-          cumulativeResultsBySubject[subjectId].scores_by_term[termId] += score;
-        });
-
-        Object.keys(cumulativeResultsBySubject).forEach((subjectId) => {
-          let total = 0;
-          let bestScore = 0;
-          Object.values(cumulativeResultsBySubject[subjectId].scores_by_term).forEach((score) => {
-            total += score;
-            if (score > bestScore) bestScore = score;
+      // --- Helper: build empty cumulative response ---
+      const buildEmptyCumulativeResponse = (cumulBySubject, cumulTermsData, classRow) => {
+        const bySubjectData = Object.values(cumulBySubject).map((subj) => {
+          const termScores = {};
+          previousTerms.forEach((t) => {
+            termScores[t.name] = subj.scores_by_term?.[t.id] || 0;
           });
-          cumulativeResultsBySubject[subjectId].total = total;
-          cumulativeResultsBySubject[subjectId].best_term = bestScore;
+          return {
+            subject: subj.subject_name,
+            ...termScores,
+            cumulative: subj.total || 0,
+            best_term: subj.best_term || 0,
+          };
         });
+        const grandTotal = Object.values(cumulBySubject).reduce((sum, s) => sum + (s.total || 0), 0);
+        const subjectCount = Object.keys(cumulBySubject).length;
+        const overallAverage = subjectCount > 0 ? grandTotal / subjectCount : 0;
 
+        return {
+          student: {
+            name: `${studentData.first_name} ${studentData.last_name}`,
+            class: classRow.name.trim(),
+            arm: classRow.arm || "",
+          },
+          term: {
+            name: termInfo[0].name,
+            session: termInfo[0].session,
+            current_term: termInfo[0].name,
+            start_date: termInfo[0].start_date,
+            end_date: termInfo[0].end_date,
+            next_term: nextTerm.length > 0 ? nextTerm[0].start_date : null,
+            next_term_name: nextTerm.length > 0 ? nextTerm[0].name : null,
+            next_term_begins: termInfo[0].next_term_begins,
+          },
+          attendance: { school_opened: 0, present: 0, absent: 0 },
+          position: "N/A",
+          total_students: 0,
+          results: [],
+          config: { school_type: "Grade School" },
+          skills: { Affective: [], Psychomotor: [] },
+          comments: { teacher_comment: "", principal_comment: "" },
+          cumulative: {
+            terms: cumulTermsData,
+            cumulative_totals: {
+              by_subject: bySubjectData,
+              grand_total: grandTotal || null,
+              overall_average: parseFloat(overallAverage.toFixed(2)) || null,
+              total_possible: subjectCount * 100,
+            },
+          },
+        };
+      };
+
+      // 3. Fetch this student's own results for the term first.
+      //    Always filter by published=TRUE since this is a student-facing endpoint.
+      const studentOnlyQuery = `
+        SELECT sr.student_id, sr.class_id, sr.subject_id, cs.name as subject_name,
+               sr.assessment_type, sr.score, sr.school_type
+        FROM student_results sr
+        JOIN class_subjects cs ON sr.subject_id = cs.id
+        WHERE sr.student_id = ? AND sr.term_id = ? AND sr.published = TRUE
+      `;
+      const [studentOwnResults] = await connection.query(studentOnlyQuery, [student_id, term_id]);
+
+      // Determine which class_id to use for class-wide ranking queries.
+      const resultClassId =
+        studentOwnResults.length > 0 ? studentOwnResults[0].class_id : studentData.class_id;
+
+      const [resultClassInfo] = await connection.query("SELECT name, arm, school_type FROM classes WHERE id = ?", [resultClassId]);
+      const resultClassRow = resultClassInfo.length > 0 ? resultClassInfo[0] : classInfo[0];
+
+      // 4. Build cumulative (previous terms) data structures.
+      const newCumulativeResultsBySubject = {};
+      const cumulativeTermsData = [];
+
+      if (previousTermIds.length > 0) {
         const [prevClassResults] = await connection.query(
-          `SELECT sr.student_id, sr.term_id, sr.subject_id, cs.name as subject_name, 
+          `SELECT sr.student_id, sr.term_id, sr.subject_id, cs.name as subject_name,
                   sr.assessment_type, sr.score
            FROM student_results sr
            JOIN class_subjects cs ON sr.subject_id = cs.id
@@ -633,287 +675,164 @@ router.get(
 
         const allTermsResultsByStudent = {};
         prevClassResults.forEach((r) => {
-          const studentId = r.student_id;
-          const termId = r.term_id;
-          const subjectId = r.subject_id;
-
-          if (!allTermsResultsByStudent[termId]) {
-            allTermsResultsByStudent[termId] = {};
-          }
-          if (!allTermsResultsByStudent[termId][studentId]) {
-            allTermsResultsByStudent[termId][studentId] = { subjects: {}, total_score: 0 };
-          }
-          if (!allTermsResultsByStudent[termId][studentId].subjects[subjectId]) {
-            allTermsResultsByStudent[termId][studentId].subjects[subjectId] = {
-              subject_name: r.subject_name,
-            };
-          }
-          allTermsResultsByStudent[termId][studentId].subjects[subjectId][r.assessment_type] =
-            parseFloat(r.score);
+          const { student_id: sid, term_id: tid, subject_id: subid } = r;
+          if (!allTermsResultsByStudent[tid]) allTermsResultsByStudent[tid] = {};
+          if (!allTermsResultsByStudent[tid][sid])
+            allTermsResultsByStudent[tid][sid] = { subjects: {}, total_score: 0 };
+          if (!allTermsResultsByStudent[tid][sid].subjects[subid])
+            allTermsResultsByStudent[tid][sid].subjects[subid] = { subject_name: r.subject_name };
+          allTermsResultsByStudent[tid][sid].subjects[subid][r.assessment_type] = parseFloat(r.score);
         });
 
-        Object.keys(allTermsResultsByStudent).forEach((termId) => {
-          const studentsInTerm = allTermsResultsByStudent[termId];
-          Object.keys(studentsInTerm).forEach((sid) => {
+        Object.keys(allTermsResultsByStudent).forEach((tid) => {
+          Object.values(allTermsResultsByStudent[tid]).forEach((s) => {
             let termTotalScore = 0;
-            Object.values(studentsInTerm[sid].subjects).forEach((subject) => {
-              const ca1 = subject.ca1 || 0;
-              const ca2 = subject.ca2 || 0;
-              const ca3 = subject.ca3 || 0;
-              const ca4 = subject.ca4 || 0;
-              const exam = subject.exam || 0;
-              subject.total = ca1 + ca2 + ca3 + ca4 + exam;
-              termTotalScore += subject.total;
+            Object.values(s.subjects).forEach((subj) => {
+              const total =
+                (subj.ca1 || 0) + (subj.ca2 || 0) + (subj.ca3 || 0) + (subj.ca4 || 0) + (subj.exam || 0);
+              subj.total = total;
+              termTotalScore += total;
             });
-            studentsInTerm[sid].total_score = termTotalScore;
+            s.total_score = termTotalScore;
           });
         });
 
         for (const term of previousTerms) {
-          const termId = term.id;
-          const termResults = allTermsResultsByStudent[termId];
-          
-          const studentResultsForTerm = termResults?.[student_id]?.subjects || {};
-          const studentTotalForTerm = termResults?.[student_id]?.total_score || 0;
+          const termResults = allTermsResultsByStudent[term.id] || {};
+          const studentResultsForTerm = termResults[student_id]?.subjects || {};
+          const studentTotalForTerm = termResults[student_id]?.total_score || 0;
 
-          const allStudentTotalsForTerm = Object.values(termResults || {}).map((s) => s.total_score);
+          const allStudentTotalsForTerm = Object.values(termResults).map((s) => s.total_score);
           const sortedTotalsForTerm = [...allStudentTotalsForTerm].sort((a, b) => b - a);
-          const studentRankForTerm = studentTotalForTerm > 0 
-            ? sortedTotalsForTerm.indexOf(studentTotalForTerm) + 1 
-            : null;
-
-          const termResultsArray = Object.values(studentResultsForTerm).map((subj) => ({
-            subject: subj.subject_name,
-            score: subj.total || 0,
-            total_possible: 100,
-          }));
+          const studentRankForTerm =
+            studentTotalForTerm > 0 ? sortedTotalsForTerm.indexOf(studentTotalForTerm) + 1 : null;
 
           const subjectCount = Object.keys(studentResultsForTerm).length;
           const termAverage = subjectCount > 0 ? studentTotalForTerm / subjectCount : 0;
 
-          cumulativeTermsDataTemp.push({
+          cumulativeTermsData.push({
             term_name: term.name,
             term_id: term.id,
-            results: termResultsArray,
+            results: Object.values(studentResultsForTerm).map((subj) => ({
+              subject: subj.subject_name,
+              score: subj.total || 0,
+              total_possible: 100,
+            })),
             term_total: studentTotalForTerm,
             term_average: parseFloat(termAverage.toFixed(2)),
             term_position: studentRankForTerm ? getOrdinal(studentRankForTerm) : null,
             term_out_of: allStudentTotalsForTerm.length,
           });
         }
+
+        const [prevStudentResults] = await connection.query(
+          `SELECT sr.term_id, sr.subject_id, cs.name as subject_name,
+                  sr.assessment_type, sr.score
+           FROM student_results sr
+           JOIN class_subjects cs ON sr.subject_id = cs.id
+           WHERE sr.student_id = ? AND sr.term_id IN (?)`,
+          [student_id, previousTermIds]
+        );
+
+        prevStudentResults.forEach((r) => {
+          if (!newCumulativeResultsBySubject[r.subject_id]) {
+            newCumulativeResultsBySubject[r.subject_id] = {
+              subject_name: r.subject_name,
+              scores_by_term: {},
+            };
+          }
+          const score = parseFloat(r.score) || 0;
+          newCumulativeResultsBySubject[r.subject_id].scores_by_term[r.term_id] =
+            (newCumulativeResultsBySubject[r.subject_id].scores_by_term[r.term_id] || 0) + score;
+        });
+
+        Object.values(newCumulativeResultsBySubject).forEach((subj) => {
+          let total = 0;
+          let bestScore = 0;
+          Object.values(subj.scores_by_term).forEach((score) => {
+            total += score;
+            if (score > bestScore) bestScore = score;
+          });
+          subj.total = total;
+          subj.best_term = bestScore;
+        });
       }
 
-      Object.assign(cumulativeTermsData, cumulativeTermsDataTemp);
-
-      // 3. Fetch results for the student for the specified term
-      let studentResultsQuery = `
-            SELECT sr.student_id, sr.class_id, sr.subject_id, cs.name as subject_name, sr.school_type, sr.assessment_type, sr.score
-            FROM student_results sr
-            JOIN class_subjects cs ON sr.subject_id = cs.id
-            WHERE sr.student_id = ? AND sr.term_id = ? AND sr.published = TRUE
-        `;
-      const [studentResults] = await connection.query(studentResultsQuery, [
-        student_id,
-        term_id,
-      ]);
-
-      if (studentResults.length === 0) {
-        const bySubjectData = Object.values(cumulativeResultsBySubject).map((subj) => {
-          const termScores = {};
-          previousTerms.forEach((t) => {
-            termScores[t.name] = subj.scores_by_term[t.id] || 0;
-          });
-          return {
-            subject: subj.subject_name,
-            ...termScores,
-            cumulative: subj.total,
-            best_term: subj.best_term,
-          };
-        });
-        
-        const grandTotal = Object.values(cumulativeResultsBySubject).reduce((sum, s) => sum + s.total, 0);
-        const subjectCount = Object.keys(cumulativeResultsBySubject).length;
-        const overallAverage = subjectCount > 0 ? grandTotal / subjectCount : 0;
-        
+      // 5. If the student has no results for this term, return cumulative data only.
+      if (studentOwnResults.length === 0) {
         return res.status(200).json({
           success: true,
-          data: {
-            student: {
-              name: `${studentData.first_name} ${studentData.last_name}`,
-              class: `${classInfo[0].name} ${classInfo[0].arm || ""}`.trim(),
-            },
-            term: {
-              name: termInfo[0].name,
-              session: termInfo[0].session,
-              next_term_begins: termInfo[0].next_term_begins,
-              start_date: termInfo[0].start_date,
-              end_date: termInfo[0].end_date,
-            },
-            attendance: { school_opened: 0, present: 0, absent: 0 },
-            position: "N/A",
-            total_students: 0,
-            results: [],
-            config: {
-              school_type: "Grade School",
-            },
-            skills: { Affective: [], Psychomotor: [] },
-            comments: { teacher_comment: "", principal_comment: "" },
-            cumulative: {
-              terms: cumulativeTermsData,
-              cumulative_totals: {
-                by_subject: bySubjectData,
-                grand_total: grandTotal || null,
-                overall_average: parseFloat(overallAverage.toFixed(2)) || null,
-                total_possible: subjectCount * 100,
-              },
-            },
-          },
-          message:
-            "No published results found for this student in the selected term.",
+          data: buildEmptyCumulativeResponse(newCumulativeResultsBySubject, cumulativeTermsData, resultClassRow),
+          message: "No published results found for this student in the selected term.",
         });
       }
 
-      // Get the class the student was in during this term (from the result)
-      const resultClassId = studentResults[0].class_id;
-      const [resultClassInfo] = await connection.query(
-        "SELECT name, arm FROM classes WHERE id = ?",
-        [resultClassId]
+      // 6. Fetch ALL classmates' results for this term (needed for ranking & subject stats).
+      const [allResults] = await connection.query(
+        `SELECT sr.student_id, sr.subject_id, cs.name as subject_name,
+                sr.assessment_type, sr.score, sr.school_type
+         FROM student_results sr
+         JOIN class_subjects cs ON sr.subject_id = cs.id
+         WHERE sr.class_id = ? AND sr.term_id = ?`,
+        [resultClassId, term_id]
       );
 
-      // 4. Fetch all results from the student's class for this term (for statistics)
-      let resultsQuery = `
-            SELECT sr.student_id, sr.subject_id, cs.name as subject_name, sr.school_type, sr.assessment_type, sr.score
-            FROM student_results sr
-            JOIN class_subjects cs ON sr.subject_id = cs.id
-            WHERE sr.class_id = ? AND sr.term_id = ? AND sr.published = TRUE
-        `;
-      const [allResults] = await connection.query(resultsQuery, [
-        resultClassId,
-        term_id,
-      ]);
+      // 7. Process all results into nested structure for ranking
+      const resultsByStudent = {};
+      let currentStudentSchoolType = resultClassRow.school_type || "Grade School";
 
-      if (allResults.length === 0) {
-        const bySubjectData = Object.values(cumulativeResultsBySubject).map((subj) => {
-          const termScores = {};
-          previousTerms.forEach((t) => {
-            termScores[t.name] = subj.scores_by_term[t.id] || 0;
-          });
-          return {
-            subject: subj.subject_name,
-            ...termScores,
-            cumulative: subj.total,
-            best_term: subj.best_term,
-          };
+      allResults.forEach((r) => {
+        const { student_id: sid, subject_id: subid } = r;
+        if (sid === parseInt(student_id) && r.school_type) {
+          currentStudentSchoolType = r.school_type;
+        }
+        if (!resultsByStudent[sid]) resultsByStudent[sid] = { subjects: {}, total_score: 0 };
+        if (!resultsByStudent[sid].subjects[subid])
+          resultsByStudent[sid].subjects[subid] = { subject_name: r.subject_name };
+        resultsByStudent[sid].subjects[subid][r.assessment_type] = parseFloat(r.score);
+      });
+
+      Object.values(resultsByStudent).forEach((s) => {
+        let total = 0;
+        Object.values(s.subjects).forEach((subj) => {
+          subj.total =
+            (subj.ca1 || 0) + (subj.ca2 || 0) + (subj.ca3 || 0) + (subj.ca4 || 0) + (subj.exam || 0);
+          total += subj.total;
         });
-        
-        const grandTotal = Object.values(cumulativeResultsBySubject).reduce((sum, s) => sum + s.total, 0);
-        const subjectCount = Object.keys(cumulativeResultsBySubject).length;
-        const overallAverage = subjectCount > 0 ? grandTotal / subjectCount : 0;
-        
+        s.total_score = total;
+      });
+
+      // If the student somehow still has no entry (edge case), return empty
+      if (!resultsByStudent[student_id]) {
         return res.status(200).json({
           success: true,
-          data: {
-            student: {
-              name: `${studentData.first_name} ${studentData.last_name}`,
-              class: `${classInfo[0].name} ${classInfo[0].arm || ""}`.trim(),
-            },
-            term: {
-              name: termInfo[0].name,
-              session: termInfo[0].session,
-              next_term_begins: termInfo[0].next_term_begins,
-              start_date: termInfo[0].start_date,
-              end_date: termInfo[0].end_date,
-            },
-            attendance: { school_opened: 0, present: 0, absent: 0 },
-            position: "N/A",
-            total_students: 0,
-            results: [],
-            config: {
-              school_type: "Grade School",
-            },
-            skills: { Affective: [], Psychomotor: [] },
-            comments: { teacher_comment: "", principal_comment: "" },
-            cumulative: {
-              terms: cumulativeTermsData,
-              cumulative_totals: {
-                by_subject: bySubjectData,
-                grand_total: grandTotal || null,
-                overall_average: parseFloat(overallAverage.toFixed(2)) || null,
-                total_possible: subjectCount * 100,
-              },
-            },
-          },
-          message:
-            "No published results found for this student in the selected term.",
+          data: buildEmptyCumulativeResponse(newCumulativeResultsBySubject, cumulativeTermsData, resultClassRow),
+          message: "No published results found for this student in the selected term.",
         });
       }
 
-      // 4. Process the results data
-      const resultsByStudent = {};
-      let currentStudentSchoolType = "Grade School";
-      allResults.forEach((r) => {
-        const studentId = r.student_id;
-        const subjectId = r.subject_id;
-
-        if (studentId === student_id && r.school_type) {
-          currentStudentSchoolType = r.school_type;
-        }
-        if (!resultsByStudent[studentId]) {
-          resultsByStudent[studentId] = { subjects: {}, total_score: 0 };
-        }
-        if (!resultsByStudent[studentId].subjects[subjectId]) {
-          resultsByStudent[studentId].subjects[subjectId] = {
-            subject_name: r.subject_name,
-          };
-        }
-        resultsByStudent[studentId].subjects[subjectId][r.assessment_type] =
-          parseFloat(r.score);
-      });
-
-      Object.keys(resultsByStudent).forEach((studentId) => {
-        let studentTotalScore = 0;
-        Object.values(resultsByStudent[studentId].subjects).forEach(
-          (subject) => {
-            const ca1 = subject.ca1 || 0;
-            const ca2 = subject.ca2 || 0;
-            const ca3 = subject.ca3 || 0;
-            const ca4 = subject.ca4 || 0;
-            const exam = subject.exam || 0;
-            subject.total = ca1 + ca2 + ca3 + ca4 + exam;
-            studentTotalScore += subject.total;
-          }
-        );
-        resultsByStudent[studentId].total_score = studentTotalScore;
-      });
-
-      // 5. Calculate stats for each subject
+      // 8. Build the report card rows
       const reportCard = [];
       const subjectsInClass = [
         ...new Map(
-          allResults.map((item) => [
-            item.subject_id,
-            { id: item.subject_id, name: item.subject_name },
-          ])
+          allResults.map((item) => [item.subject_id, { id: item.subject_id, name: item.subject_name }])
         ).values(),
       ];
 
       for (const subject of subjectsInClass) {
         const subjectScores = Object.values(resultsByStudent)
-          .map((student) => student.subjects[subject.id]?.total)
-          .filter((total) => total !== undefined && total !== null);
+          .map((s) => s.subjects[subject.id]?.total)
+          .filter((v) => v !== undefined && v !== null);
 
         if (subjectScores.length === 0) continue;
 
-        const highest = Math.max(...subjectScores);
-        const lowest = Math.min(...subjectScores);
-        const average =
-          subjectScores.reduce((a, b) => a + b, 0) / subjectScores.length;
-        const sortedScores = [...subjectScores].sort((a, b) => b - a);
-        const studentSubjectData =
-          resultsByStudent[student_id]?.subjects[subject.id];
-
+        const studentSubjectData = resultsByStudent[student_id]?.subjects[subject.id];
         if (!studentSubjectData) continue;
 
+        const highest = Math.max(...subjectScores);
+        const lowest = Math.min(...subjectScores);
+        const average = subjectScores.reduce((a, b) => a + b, 0) / subjectScores.length;
+        const sortedScores = [...subjectScores].sort((a, b) => b - a);
         const studentTotal = studentSubjectData.total;
         const rank = sortedScores.indexOf(studentTotal) + 1;
 
@@ -924,8 +843,7 @@ router.get(
         else if (studentTotal >= 45) grade = "D";
         else if (studentTotal >= 40) grade = "E";
 
-        const prevTermCumulative = cumulativeResultsBySubject[subject.id]?.total || 0;
-        const grandTotal = studentTotal + prevTermCumulative;
+        const prevTermCumulative = newCumulativeResultsBySubject[subject.id]?.total || 0;
 
         reportCard.push({
           subject: subject.name,
@@ -935,90 +853,27 @@ router.get(
           ca4: studentSubjectData.ca4 || 0,
           exam: studentSubjectData.exam || 0,
           total: studentTotal,
-          grade: grade,
+          grade,
           position: getOrdinal(rank),
-          highest: highest,
-          lowest: lowest,
+          highest,
+          lowest,
           average: parseFloat(average.toFixed(2)),
           cumulative_from_previous_terms: prevTermCumulative,
-          grand_total: grandTotal,
+          grand_total: studentTotal + prevTermCumulative,
         });
       }
 
-      // 6. Calculate overall position
-      const allStudentTotals = Object.values(resultsByStudent).map(
-        (s) => s.total_score
-      );
+      // 9. Overall class position
+      const allStudentTotals = Object.values(resultsByStudent).map((s) => s.total_score);
       const sortedTotals = [...allStudentTotals].sort((a, b) => b - a);
+      const studentRank = sortedTotals.indexOf(resultsByStudent[student_id].total_score) + 1;
 
-      if (!resultsByStudent[student_id]) {
-        const bySubjectData = Object.values(cumulativeResultsBySubject).map((subj) => {
-          const termScores = {};
-          previousTerms.forEach((t) => {
-            termScores[t.name] = subj.scores_by_term[t.id] || 0;
-          });
-          return {
-            subject: subj.subject_name,
-            ...termScores,
-            cumulative: subj.total,
-            best_term: subj.best_term,
-          };
-        });
-        
-        const grandTotal = Object.values(cumulativeResultsBySubject).reduce((sum, s) => sum + s.total, 0);
-        const subjectCount = Object.keys(cumulativeResultsBySubject).length;
-        const overallAverage = subjectCount > 0 ? grandTotal / subjectCount : 0;
-        
-        return res.status(200).json({
-          success: true,
-          data: {
-            student: {
-              name: `${studentData.first_name} ${studentData.last_name}`,
-              class: `${classInfo[0].name} ${classInfo[0].arm || ""}`.trim(),
-            },
-            term: {
-              name: termInfo[0].name,
-              session: termInfo[0].session,
-              current_term: termInfo[0].name,
-              start_date: termInfo[0].start_date,
-              end_date: termInfo[0].end_date,
-              next_term: nextTerm.length > 0 ? nextTerm[0].start_date : null,
-              next_term_name: nextTerm.length > 0 ? nextTerm[0].name : null,
-              next_term_begins: termInfo[0].next_term_begins,
-            },
-            attendance: { school_opened: 0, present: 0, absent: 0 },
-            position: "N/A",
-            total_students: 0,
-            results: [],
-            config: {
-              school_type: "Grade School",
-            },
-            skills: { Affective: [], Psychomotor: [] },
-            comments: { teacher_comment: "", principal_comment: "" },
-            cumulative: {
-              terms: cumulativeTermsData,
-              cumulative_totals: {
-                by_subject: bySubjectData,
-                grand_total: grandTotal || null,
-                overall_average: parseFloat(overallAverage.toFixed(2)) || null,
-                total_possible: subjectCount * 100,
-              },
-            },
-          },
-          message:
-            "No published results found for this student in the selected term.",
-        });
-      }
-
-      const studentRank =
-        sortedTotals.indexOf(resultsByStudent[student_id].total_score) + 1;
-
-      // 7. Fetch attendance data
+      // 10. Attendance
       const [attendance] = await connection.query(
         `SELECT status, COUNT(*) as count 
-             FROM student_attendance 
-             WHERE student_id = ? AND date BETWEEN ? AND ? 
-             GROUP BY status`,
+         FROM student_attendance 
+         WHERE student_id = ? AND date BETWEEN ? AND ? 
+         GROUP BY status`,
         [student_id, termInfo[0].start_date, termInfo[0].end_date]
       );
       const attendanceData = {
@@ -1027,12 +882,9 @@ router.get(
         Late: 0,
         ...Object.fromEntries(attendance.map((a) => [a.status, a.count])),
       };
-      const schoolDays = moment(termInfo[0].end_date).diff(
-        moment(termInfo[0].start_date),
-        "days"
-      );
+      const schoolDays = moment(termInfo[0].end_date).diff(moment(termInfo[0].start_date), "days");
 
-      // 8. Fetch skills data
+      // 11. Skills
       const [skills] = await connection.query(
         "SELECT skill_type, skill_name, rating FROM student_skills WHERE student_id = ? AND term_id = ?",
         [student_id, term_id]
@@ -1040,24 +892,19 @@ router.get(
       const skillsData = { Affective: [], Psychomotor: [] };
       skills.forEach((skill) => {
         if (skillsData[skill.skill_type]) {
-          skillsData[skill.skill_type].push({
-            name: skill.skill_name,
-            rating: skill.rating,
-          });
+          skillsData[skill.skill_type].push({ name: skill.skill_name, rating: skill.rating });
         }
       });
 
-      // 9. Fetch comments
+      // 12. Comments
       const [comments] = await connection.query(
         "SELECT teacher_comment, principal_comment FROM report_card_comments WHERE student_id = ? AND term_id = ?",
         [student_id, term_id]
       );
-      const commentData =
-        comments.length > 0
-          ? comments[0]
-          : { teacher_comment: "", principal_comment: "" };
+      const commentData = comments.length > 0 ? comments[0] : { teacher_comment: "", principal_comment: "" };
 
-      const bySubjectData = Object.values(cumulativeResultsBySubject).map((subj) => {
+      // 13. Final cumulative totals
+      const bySubjectData = Object.values(newCumulativeResultsBySubject).map((subj) => {
         const termScores = {};
         previousTerms.forEach((t) => {
           termScores[t.name] = subj.scores_by_term[t.id] || 0;
@@ -1070,18 +917,20 @@ router.get(
         };
       });
 
-      const cumulativeGrandTotal = Object.values(cumulativeResultsBySubject).reduce((sum, s) => sum + s.total, 0);
-      const subjectCount = Object.keys(cumulativeResultsBySubject).length;
-      const overallAverage = subjectCount > 0 ? cumulativeGrandTotal / subjectCount : 0;
-      const grandTotalScore = resultsByStudent[student_id].total_score + cumulativeGrandTotal;
+      const cumulativeGrandTotal = Object.values(newCumulativeResultsBySubject).reduce(
+        (sum, s) => sum + (s.total || 0),
+        0
+      );
+      const subjectCountFinal = Object.keys(newCumulativeResultsBySubject).length;
+      const cumulativeOverallAverage = subjectCountFinal > 0 ? cumulativeGrandTotal / subjectCountFinal : 0;
 
       res.json({
         success: true,
         data: {
           student: {
             name: `${studentData.first_name} ${studentData.last_name}`,
-            class: `${resultClassInfo[0].name}`.trim(),
-            arm: resultClassInfo[0].arm,
+            class: resultClassRow.name.trim(),
+            arm: resultClassRow.arm || "",
             dob: studentData.dob,
             gender: studentData.gender,
             passport: studentData.passport,
@@ -1105,9 +954,7 @@ router.get(
           position: getOrdinal(studentRank),
           total_students: allStudentTotals.length,
           results: reportCard,
-          config: {
-            school_type: currentStudentSchoolType,
-          },
+          config: { school_type: currentStudentSchoolType },
           skills: skillsData,
           comments: commentData,
           cumulative: {
@@ -1115,18 +962,15 @@ router.get(
             cumulative_totals: {
               by_subject: bySubjectData,
               grand_total: cumulativeGrandTotal || null,
-              overall_average: parseFloat(overallAverage.toFixed(2)) || null,
-              total_possible: subjectCount * 100,
+              overall_average: parseFloat(cumulativeOverallAverage.toFixed(2)) || null,
+              total_possible: subjectCountFinal * 100,
             },
           },
         },
       });
     } catch (err) {
       console.error("Error fetching student report card:", err);
-      res.status(500).json({
-        success: false,
-        message: "Server error while fetching report card.",
-      });
+      res.status(500).json({ success: false, message: "Server error while fetching report card." });
     } finally {
       if (connection) connection.release();
     }
