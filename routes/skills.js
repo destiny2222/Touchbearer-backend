@@ -190,4 +190,176 @@ router.get('/default', (req, res) => {
     });
 });
 
+// GET /api/skills/default/type1 - Get default skills for younger classes
+router.get('/default/type1', (req, res) => {
+    const type1Skills = {
+        Affective: [
+            "Punctuality",
+            "Attendance",
+            "Carrying Out Assignment",
+            "Attention & Concentration",
+            "Perseverance",
+            "Self-Control",
+            "Self-Confidence",
+            "Independence",
+            "Leadership Skills",
+            "Respect for Rules",
+            "Relationship with Others",
+            "Honesty",
+            "Neatness & Hygiene",
+            "Communication Skills"
+        ],
+        Psychomotor: [
+            "Practical Skills",
+            "Games & Sports"
+        ]
+    };
+    res.json({ success: true, data: type1Skills });
+});
+
+// GET /api/skills/default/type2 - Get default skills for older classes
+router.get('/default/type2', (req, res) => {
+    const type2Skills = {
+        Affective: [
+            "Punctuality",
+            "Attendance",
+            "Neatness & Appearance",
+            "Honesty & Integrity",
+            "Self-Control & Discipline",
+            "Respect & Conduct",
+            "Attention & Focus",
+            "Task Completion",
+            "Perseverance",
+            "Responsibility & Reliability",
+            "Initiative",
+            "Social Skills & Teamwork",
+            "Leadership Skills"
+        ],
+        Psychomotor: [
+            "Practical Skills (Use of Tools/Equipment)",
+            "Physical Development (Sports)",
+            "Creative Skills (Music/Arts)"
+        ]
+    };
+    res.json({ success: true, data: type2Skills });
+});
+
+// DELETE /api/skills/clear/:student_id - Teacher clears skills for a single student
+router.delete('/clear/:student_id', [auth, authorize(['Teacher'])], async (req, res) => {
+    const { student_id } = req.params;
+    const { term_id } = req.query;
+
+    if (!term_id) {
+        return res.status(400).json({ success: false, message: 'The term_id query parameter is required.' });
+    }
+
+    const connection = await pool.getConnection();
+    try {
+        await connection.beginTransaction();
+
+        // Verify student exists
+        const [student] = await connection.query('SELECT id, class_id, branch_id FROM students WHERE id = ?', [student_id]);
+        if (student.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ success: false, message: 'Student not found.' });
+        }
+
+        // Verify teacher owns this class
+        const staffInfo = await getStaffInfo(req.user.id);
+        if (!staffInfo) {
+            await connection.rollback();
+            return res.status(403).json({ success: false, message: 'Staff record not found.' });
+        }
+
+        const [teacherClass] = await connection.query('SELECT id FROM classes WHERE teacher_id = ? AND id = ?', [staffInfo.id, student[0].class_id]);
+        if (teacherClass.length === 0) {
+            await connection.rollback();
+            return res.status(403).json({ success: false, message: 'Only the class teacher can clear skills.' });
+        }
+
+        // Delete skills for the student in the specified term
+        const [result] = await connection.query(
+            'DELETE FROM student_skills WHERE student_id = ? AND term_id = ?',
+            [student_id, term_id]
+        );
+
+        await connection.commit();
+
+        res.status(200).json({
+            success: true,
+            message: `Skills cleared for student.`,
+            deletedCount: result.affectedRows
+        });
+
+    } catch (err) {
+        await connection.rollback();
+        console.error('Error clearing student skills:', err);
+        res.status(500).json({ success: false, message: 'Server error while clearing skills.' });
+    } finally {
+        connection.release();
+    }
+});
+
+// DELETE /api/skills/clear-bulk - Admin clears skills for multiple students
+router.delete('/clear-bulk', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => {
+    const { student_ids, term_id } = req.body;
+
+    if (!student_ids || !Array.isArray(student_ids) || student_ids.length === 0) {
+        return res.status(400).json({ success: false, message: 'student_ids array is required.' });
+    }
+
+    if (!term_id) {
+        return res.status(400).json({ success: false, message: 'term_id is required.' });
+    }
+
+    const connection = await pool.getConnection();
+    try {
+        await connection.beginTransaction();
+
+        // Verify staff branch
+        const staffInfo = await getStaffInfo(req.user.id);
+        if (!staffInfo && req.user.roles.includes('Admin') && !req.user.roles.includes('SuperAdmin')) {
+            await connection.rollback();
+            return res.status(403).json({ success: false, message: 'Staff record not found.' });
+        }
+
+        // Verify all students exist and belong to the admin's branch
+        const [students] = await connection.query('SELECT id, branch_id FROM students WHERE id IN (?)', [student_ids]);
+        if (students.length !== student_ids.length) {
+            await connection.rollback();
+            return res.status(404).json({ success: false, message: 'One or more students not found.' });
+        }
+
+        if (req.user.roles.includes('Admin') && !req.user.roles.includes('SuperAdmin')) {
+            for (const student of students) {
+                if (student.branch_id !== staffInfo.branch_id) {
+                    await connection.rollback();
+                    return res.status(403).json({ success: false, message: 'You can only clear skills for students in your own branch.' });
+                }
+            }
+        }
+
+        // Delete skills for all specified students in the term
+        const [result] = await connection.query(
+            'DELETE FROM student_skills WHERE student_id IN (?) AND term_id = ?',
+            [student_ids, term_id]
+        );
+
+        await connection.commit();
+
+        res.status(200).json({
+            success: true,
+            message: `Skills cleared for ${result.affectedRows} student record(s).`,
+            deletedCount: result.affectedRows
+        });
+
+    } catch (err) {
+        await connection.rollback();
+        console.error('Error clearing bulk student skills:', err);
+        res.status(500).json({ success: false, message: 'Server error while clearing skills.' });
+    } finally {
+        connection.release();
+    }
+});
+
 module.exports = router;
