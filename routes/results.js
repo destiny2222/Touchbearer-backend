@@ -628,7 +628,7 @@ router.get(
            FROM student_results sr
            JOIN class_subjects cs ON sr.subject_id = cs.id
            WHERE sr.class_id = ? AND sr.term_id IN (?)`,
-          [studentData.class_id, previousTermIds]
+          [resultClassId, previousTermIds]
         );
 
         const allTermsResultsByStudent = {};
@@ -705,7 +705,82 @@ router.get(
 
       Object.assign(cumulativeTermsData, cumulativeTermsDataTemp);
 
-      // 3. Fetch results for the entire class for the specified term
+      // 3. Fetch results for the student for the specified term
+      let studentResultsQuery = `
+            SELECT sr.student_id, sr.class_id, sr.subject_id, cs.name as subject_name, sr.school_type, sr.assessment_type, sr.score
+            FROM student_results sr
+            JOIN class_subjects cs ON sr.subject_id = cs.id
+            WHERE sr.student_id = ? AND sr.term_id = ? AND sr.published = TRUE
+        `;
+      const [studentResults] = await connection.query(studentResultsQuery, [
+        student_id,
+        term_id,
+      ]);
+
+      if (studentResults.length === 0) {
+        const bySubjectData = Object.values(cumulativeResultsBySubject).map((subj) => {
+          const termScores = {};
+          previousTerms.forEach((t) => {
+            termScores[t.name] = subj.scores_by_term[t.id] || 0;
+          });
+          return {
+            subject: subj.subject_name,
+            ...termScores,
+            cumulative: subj.total,
+            best_term: subj.best_term,
+          };
+        });
+        
+        const grandTotal = Object.values(cumulativeResultsBySubject).reduce((sum, s) => sum + s.total, 0);
+        const subjectCount = Object.keys(cumulativeResultsBySubject).length;
+        const overallAverage = subjectCount > 0 ? grandTotal / subjectCount : 0;
+        
+        return res.status(200).json({
+          success: true,
+          data: {
+            student: {
+              name: `${studentData.first_name} ${studentData.last_name}`,
+              class: `${classInfo[0].name} ${classInfo[0].arm || ""}`.trim(),
+            },
+            term: {
+              name: termInfo[0].name,
+              session: termInfo[0].session,
+              next_term_begins: termInfo[0].next_term_begins,
+              start_date: termInfo[0].start_date,
+              end_date: termInfo[0].end_date,
+            },
+            attendance: { school_opened: 0, present: 0, absent: 0 },
+            position: "N/A",
+            total_students: 0,
+            results: [],
+            config: {
+              school_type: "Grade School",
+            },
+            skills: { Affective: [], Psychomotor: [] },
+            comments: { teacher_comment: "", principal_comment: "" },
+            cumulative: {
+              terms: cumulativeTermsData,
+              cumulative_totals: {
+                by_subject: bySubjectData,
+                grand_total: grandTotal || null,
+                overall_average: parseFloat(overallAverage.toFixed(2)) || null,
+                total_possible: subjectCount * 100,
+              },
+            },
+          },
+          message:
+            "No published results found for this student in the selected term.",
+        });
+      }
+
+      // Get the class the student was in during this term (from the result)
+      const resultClassId = studentResults[0].class_id;
+      const [resultClassInfo] = await connection.query(
+        "SELECT name, arm FROM classes WHERE id = ?",
+        [resultClassId]
+      );
+
+      // 4. Fetch all results from the student's class for this term (for statistics)
       let resultsQuery = `
             SELECT sr.student_id, sr.subject_id, cs.name as subject_name, sr.school_type, sr.assessment_type, sr.score
             FROM student_results sr
@@ -713,7 +788,7 @@ router.get(
             WHERE sr.class_id = ? AND sr.term_id = ? AND sr.published = TRUE
         `;
       const [allResults] = await connection.query(resultsQuery, [
-        studentData.class_id,
+        resultClassId,
         term_id,
       ]);
 
@@ -1005,8 +1080,8 @@ router.get(
         data: {
           student: {
             name: `${studentData.first_name} ${studentData.last_name}`,
-            class: `${classInfo[0].name}`.trim(),
-            arm: classInfo[0].arm,
+            class: `${resultClassInfo[0].name}`.trim(),
+            arm: resultClassInfo[0].arm,
             dob: studentData.dob,
             gender: studentData.gender,
             passport: studentData.passport,
@@ -2217,22 +2292,88 @@ router.get(
         });
       }
 
-      // 3. Fetch results for the entire class for the specified term
-      let resultsQuery = `
-            SELECT sr.student_id, sr.subject_id, cs.name as subject_name, sr.assessment_type, sr.score, sr.school_type
+      // 3. Fetch results for the student for the specified term
+      let studentResultsQuery = `
+            SELECT sr.student_id, sr.class_id, sr.subject_id, cs.name as subject_name, sr.assessment_type, sr.score, sr.school_type
             FROM student_results sr
             JOIN class_subjects cs ON sr.subject_id = cs.id
-            WHERE sr.class_id = ? AND sr.term_id = ?
+            WHERE sr.student_id = ? AND sr.term_id = ?
         `;
-      const queryParams = [studentData.class_id, term_id];
+      const studentResultsParams = [student_id, term_id];
 
       // Only show published results to students and parents
       if (
         req.user.roles.includes("Student") ||
         req.user.roles.includes("Parent")
       ) {
-        resultsQuery += " AND sr.published = TRUE";
+        studentResultsQuery += " AND sr.published = TRUE";
       }
+
+      const [studentResults] = await connection.query(studentResultsQuery, studentResultsParams);
+
+      if (studentResults.length === 0) {
+        const bySubjectData = Object.values(cumulativeResultsBySubject).map((subj) => {
+          const termScores = {};
+          previousTerms.forEach((t) => {
+            termScores[t.name] = subj.scores_by_term[t.id] || 0;
+          });
+          return {
+            subject: subj.subject_name,
+            ...termScores,
+            cumulative: subj.total,
+            best_term: subj.best_term,
+          };
+        });
+        
+        const grandTotal = Object.values(cumulativeResultsBySubject).reduce((sum, s) => sum + s.total, 0);
+        const subjectCount = Object.keys(cumulativeResultsBySubject).length;
+        const overallAverage = subjectCount > 0 ? grandTotal / subjectCount : 0;
+        
+        return res.status(200).json({
+          success: true,
+          data: {
+            student: {
+              name: `${studentData.first_name} ${studentData.last_name}`,
+              class: `${classInfo[0].name}`.trim(),
+              arm: classInfo[0].arm || "",
+            },
+            term: {
+              name: termInfo[0].name,
+              session: termInfo[0].session,
+              next_term_begins: termInfo[0].next_term_begins,
+              start_date: termInfo[0].start_date,
+              end_date: termInfo[0].end_date,
+            },
+            attendance: { school_opened: 0, present: 0, absent: 0 },
+            position: "N/A",
+            total_students: 0,
+            results: [],
+            config: {
+              school_type: "Grade School",
+            },
+            skills: { Affective: [], Psychomotor: [] },
+            comments: { teacher_comment: "", principal_comment: "" },
+            cumulative: {
+              terms: cumulativeTermsData,
+              cumulative_totals: {
+                by_subject: bySubjectData,
+                grand_total: grandTotal || null,
+                overall_average: parseFloat(overallAverage.toFixed(2)) || null,
+                total_possible: subjectCount * 100,
+              },
+            },
+          },
+          message:
+            "No published results found for this student in the selected term.",
+        });
+      }
+
+      // Get the class the student was in during this term (from the result)
+      const resultClassId = studentResults[0].class_id;
+      const [resultClassInfo] = await connection.query(
+        "SELECT name, arm FROM classes WHERE id = ?",
+        [resultClassId]
+      );
 
       const cumulativeTermsData = [];
       const allTermsResultsByStudent = {};
@@ -2245,7 +2386,7 @@ router.get(
            FROM student_results sr
            JOIN class_subjects cs ON sr.subject_id = cs.id
            WHERE sr.class_id = ? AND sr.term_id IN (?)`,
-          [studentData.class_id, previousTermIds]
+          [resultClassId, previousTermIds]
         );
 
         prevClassResults.forEach((r) => {
@@ -2383,8 +2524,8 @@ router.get(
           data: {
             student: {
               name: `${studentData.first_name} ${studentData.last_name}`,
-              class: `${classInfo[0].name} || ""}`.trim(),
-              arm: classInfo[0].arm || "",
+              class: `${resultClassInfo[0].name}`.trim(),
+              arm: resultClassInfo[0].arm || "",
             },
             term: {
               name: termInfo[0].name,
@@ -2658,8 +2799,8 @@ router.get(
         data: {
           student: {
             name: `${studentData.first_name} ${studentData.last_name}`,
-            class: `${classInfo[0].name}`.trim(),
-            arm: classInfo[0].arm || "",
+            class: `${resultClassInfo[0].name}`.trim(),
+            arm: resultClassInfo[0].arm || "",
             dob: studentData.dob,
             gender: studentData.gender,
             passport: studentData.passport,

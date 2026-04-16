@@ -52,12 +52,34 @@ router.post('/students', [auth, authorize(['Teacher'])], async (req, res) => {
         }
 
         // 4. Verify the next class exists
-        const [nextClass] = await connection.query('SELECT id FROM classes WHERE id = ?', [next_class_id]);
+        const [nextClass] = await connection.query('SELECT id, branch_id FROM classes WHERE id = ?', [next_class_id]);
         if (nextClass.length === 0) {
             throw new Error('The specified next class does not exist.');
         }
 
-        // 5. Update students' class
+        // 5. Cross-session validation: Check if promotion is across sessions
+        const [currentClassBranch] = await connection.query('SELECT branch_id FROM classes WHERE id = ?', [currentClassId]);
+        const currentBranchId = currentClassBranch[0].branch_id;
+        const nextBranchId = nextClass[0].branch_id;
+
+        const [currentTermResult] = await connection.query(
+            "SELECT id, session FROM terms WHERE is_active = TRUE AND (branch_id = ? OR branch_id IS NULL) ORDER BY branch_id DESC LIMIT 1",
+            [currentBranchId]
+        );
+
+        if (currentTermResult.length > 0) {
+            const currentSession = currentTermResult[0].session;
+            const [nextTermResult] = await connection.query(
+                "SELECT session FROM terms WHERE is_active = TRUE AND (branch_id = ? OR branch_id IS NULL) ORDER BY branch_id DESC LIMIT 1",
+                [nextBranchId]
+            );
+
+            if (nextTermResult.length > 0 && currentSession === nextTermResult[0].session) {
+                throw new Error('Cannot promote students within the same session. Promotion should be to a class in a different academic session.');
+            }
+        }
+
+        // 6. Update students' class
         const [updateResult] = await connection.query(
             'UPDATE students SET class_id = ? WHERE id IN (?)',
             [next_class_id, student_ids]
