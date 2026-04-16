@@ -42,7 +42,7 @@ router.post('/students', [auth, authorize(['Teacher'])], async (req, res) => {
         }
 
         // 3. Authorization: Check if the teacher is the class teacher for the students' current class.
-        const [classRows] = await connection.query('SELECT teacher_id FROM classes WHERE id = ?', [currentClassId]);
+        const [classRows] = await connection.query('SELECT teacher_id, branch_id FROM classes WHERE id = ?', [currentClassId]);
         if (classRows.length === 0) {
             throw new Error("The students' current class could not be found.");
         }
@@ -51,32 +51,56 @@ router.post('/students', [auth, authorize(['Teacher'])], async (req, res) => {
             throw new Error('Only the assigned class teacher can promote students from this class.');
         }
 
-        // 4. Verify the next class exists
+        const currentBranchId = classRows[0].branch_id;
+
+        // 4. Verify the next class exists and get its branch
         const [nextClass] = await connection.query('SELECT id, branch_id FROM classes WHERE id = ?', [next_class_id]);
         if (nextClass.length === 0) {
             throw new Error('The specified next class does not exist.');
         }
 
-        // 5. Cross-session validation: Check if promotion is across sessions
-        const [currentClassBranch] = await connection.query('SELECT branch_id FROM classes WHERE id = ?', [currentClassId]);
-        const currentBranchId = currentClassBranch[0].branch_id;
         const nextBranchId = nextClass[0].branch_id;
 
-        const [currentTermResult] = await connection.query(
-            "SELECT id, session FROM terms WHERE is_active = TRUE AND (branch_id = ? OR branch_id IS NULL) ORDER BY branch_id DESC LIMIT 1",
-            [currentBranchId]
+        // 5. Cross-session validation: Must have Third Term results to promote
+        // Get the latest Third Term result for each student
+        const [thirdTermResults] = await connection.query(
+            `SELECT sr.student_id, sr.class_id, t.session, t.branch_id
+             FROM student_results sr
+             JOIN terms t ON sr.term_id = t.id
+             WHERE sr.student_id IN (?) AND t.name = 'Third Term'
+             ORDER BY sr.created_at DESC`,
+            [student_ids]
         );
 
-        if (currentTermResult.length > 0) {
-            const currentSession = currentTermResult[0].session;
-            const [nextTermResult] = await connection.query(
-                "SELECT session FROM terms WHERE is_active = TRUE AND (branch_id = ? OR branch_id IS NULL) ORDER BY branch_id DESC LIMIT 1",
-                [nextBranchId]
-            );
-
-            if (nextTermResult.length > 0 && currentSession === nextTermResult[0].session) {
-                throw new Error('Cannot promote students within the same session. Promotion should be to a class in a different academic session.');
+        // Check each student has Third Term results
+        const studentsWithThirdTerm = new Set(thirdTermResults.map(r => r.student_id));
+        for (const studentId of student_ids) {
+            if (!studentsWithThirdTerm.has(studentId)) {
+                throw new Error(`Student does not have Third Term results. Cannot promote without completing the academic session.`);
             }
+        }
+
+        // Get the session from the third term results (should be the same for all)
+        const currentSession = thirdTermResults[0].session;
+        
+        // Calculate the next session: 2025/2026 -> 2026/2027
+        const sessionParts = currentSession.split('/');
+        if (sessionParts.length !== 2) {
+            throw new Error('Invalid session format in student results.');
+        }
+        
+        const startYear = parseInt(sessionParts[0]);
+        const endYear = parseInt(sessionParts[1]);
+        const nextSession = `${startYear + 1}/${endYear + 1}`;
+
+        // Verify the next class has terms in the next session
+        const [nextSessionTerms] = await connection.query(
+            "SELECT id FROM terms WHERE session = ? AND (branch_id = ? OR branch_id IS NULL) LIMIT 1",
+            [nextSession, nextBranchId]
+        );
+
+        if (nextSessionTerms.length === 0) {
+            throw new Error(`No terms found for session ${nextSession}. Please create the new academic session terms before promoting students.`);
         }
 
         // 6. Update students' class
@@ -89,7 +113,7 @@ router.post('/students', [auth, authorize(['Teacher'])], async (req, res) => {
 
         res.json({ 
             success: true, 
-            message: `${updateResult.affectedRows} student(s) promoted successfully.` 
+            message: `${updateResult.affectedRows} student(s) promoted successfully to ${nextSession} session.` 
         });
 
     } catch (error) {

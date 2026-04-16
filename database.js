@@ -149,6 +149,7 @@ async function initializeDatabase() {
                 branch_id VARCHAR(36) NOT NULL,
                 teacher_id VARCHAR(36) NOT NULL,
                 total_student INT DEFAULT 0,
+                school_type ENUM('Early Years', 'Grade School', 'Middle School', 'Senior School') DEFAULT 'Grade School',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE,
                 FOREIGN KEY (teacher_id) REFERENCES staff(id) ON DELETE RESTRICT
@@ -870,6 +871,12 @@ async function initializeDatabase() {
           "ALTER TABLE classes ADD COLUMN arm VARCHAR(100) AFTER name"
         );
         console.log("Added 'arm' column to classes table");
+      }
+      if (!existingClassCols.includes("school_type")) {
+        await connection.query(
+          "ALTER TABLE classes ADD COLUMN school_type ENUM('Early Years', 'Grade School', 'Middle School', 'Senior School') DEFAULT 'Grade School' AFTER total_student"
+        );
+        console.log("Added 'school_type' column to classes table");
       }
     } catch (error) {
       console.log("Error updating classes table:", error.message);

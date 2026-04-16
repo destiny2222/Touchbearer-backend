@@ -6,11 +6,14 @@ const authorize = require('../middleware/authorize');
 
 // Create a new class
 router.post('/', auth, authorize(['SuperAdmin', 'Admin']), async (req, res) => {
-    const { name, arm, branch_id, teacher_id, total_student } = req.body;
+    const { name, arm, branch_id, teacher_id, total_student, school_type } = req.body;
 
     if (!name || !branch_id || !teacher_id) {
         return res.status(400).json({ success: false, message: 'Please provide name, branch_id, and teacher_id.' });
     }
+
+    const validSchoolTypes = ['Early Years', 'Grade School', 'Middle School', 'Senior School'];
+    const schoolTypeValue = school_type && validSchoolTypes.includes(school_type) ? school_type : 'Grade School';
 
     const totalStudentValue = total_student ? parseInt(total_student, 10) : 0;
     if (isNaN(totalStudentValue) || totalStudentValue < 0) {
@@ -51,7 +54,8 @@ router.post('/', auth, authorize(['SuperAdmin', 'Admin']), async (req, res) => {
             arm: arm || null,
             branch_id,
             teacher_id,
-            total_student: totalStudentValue
+            total_student: totalStudentValue,
+            school_type: schoolTypeValue
         };
 
         await connection.query('INSERT INTO classes SET ?', newClass);
@@ -86,6 +90,7 @@ router.get('/', async (req, res) => {
                 c.name,
                 c.arm,
                 c.total_student,
+                c.school_type,
                 c.branch_id,
                 b.school_name as branch_name,
                 c.teacher_id,
@@ -107,7 +112,7 @@ router.get('/', async (req, res) => {
 // Update an existing class
 router.put('/:id', auth, authorize(['SuperAdmin', 'Admin']), async (req, res) => {
     const classId = req.params.id;
-    const { name, arm, teacher_id, total_student } = req.body;
+    const { name, arm, teacher_id, total_student, school_type } = req.body;
     const connection = await pool.getConnection();
 
     try {
@@ -139,6 +144,12 @@ router.put('/:id', auth, authorize(['SuperAdmin', 'Admin']), async (req, res) =>
             }
             updateFields.total_student = totalStudentValue;
         }
+        if (school_type !== undefined) {
+            const validSchoolTypes = ['Early Years', 'Grade School', 'Middle School', 'Senior School'];
+            if (validSchoolTypes.includes(school_type)) {
+                updateFields.school_type = school_type;
+            }
+        }
 
         let teacherName = null;
         if (teacher_id) {
@@ -158,7 +169,7 @@ router.put('/:id', auth, authorize(['SuperAdmin', 'Admin']), async (req, res) =>
         await connection.commit();
 
         const [updatedClass] = await connection.query(`
-            SELECT c.id, c.name, c.arm, c.total_student, c.branch_id, b.school_name as branch_name, c.teacher_id, s.name as teacher_name
+            SELECT c.id, c.name, c.arm, c.total_student, c.school_type, c.branch_id, b.school_name as branch_name, c.teacher_id, s.name as teacher_name
             FROM classes c
             JOIN branches b ON c.branch_id = b.id
             JOIN staff s ON c.teacher_id = s.id

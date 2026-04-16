@@ -193,6 +193,86 @@ router.get('/current', auth, async (req, res) => {
     }
 });
 
+// GET /api/terms/session/current - Get terms for the current academic session (max 3)
+router.get('/session/current', auth, async (req, res) => {
+    try {
+        let branchId = null;
+        const { roles, id: userId } = req.user;
+
+        if (roles.includes('Admin') || roles.includes('Teacher') || roles.includes('NonTeachingStaff')) {
+            const [staff] = await pool.query('SELECT branch_id FROM staff WHERE user_id = ?', [userId]);
+            if (staff.length > 0) {
+                branchId = staff[0].branch_id;
+            }
+        } else if (roles.includes('Student') || roles.includes('Parent')) {
+            const [student] = await pool.query(`
+                SELECT s.branch_id 
+                FROM students s
+                LEFT JOIN parents p ON s.parent_id = p.id
+                WHERE s.user_id = ? OR p.user_id = ?
+                LIMIT 1
+            `, [userId, userId]);
+            if (student.length > 0) {
+                branchId = student[0].branch_id;
+            }
+        }
+
+        let currentSession = null;
+
+        if (branchId) {
+            const [activeTerms] = await pool.query(
+                'SELECT session FROM terms WHERE is_active = TRUE AND branch_id = ? LIMIT 1',
+                [branchId]
+            );
+            if (activeTerms.length > 0) {
+                currentSession = activeTerms[0].session;
+            }
+        }
+
+        if (!currentSession) {
+            const [globalActiveTerms] = await pool.query(
+                'SELECT session FROM terms WHERE is_active = TRUE AND branch_id IS NULL LIMIT 1'
+            );
+            if (globalActiveTerms.length > 0) {
+                currentSession = globalActiveTerms[0].session;
+            }
+        }
+
+        if (!currentSession && roles.includes('SuperAdmin')) {
+            const [anyActiveTerm] = await pool.query(
+                'SELECT session FROM terms WHERE is_active = TRUE ORDER BY start_date DESC LIMIT 1'
+            );
+            if (anyActiveTerm.length > 0) {
+                currentSession = anyActiveTerm[0].session;
+            }
+        }
+
+        if (!currentSession) {
+            return res.status(404).json({ success: false, message: 'No active academic session found.' });
+        }
+
+        let query = 'SELECT * FROM terms WHERE session = ?';
+        const queryParams = [currentSession];
+
+        if (branchId) {
+            query += ' AND (branch_id = ? OR branch_id IS NULL)';
+            queryParams.push(branchId);
+        }
+
+        query += ' ORDER BY start_date ASC LIMIT 3';
+
+        const [terms] = await pool.query(query, queryParams);
+
+        res.json({
+            success: true,
+            data: terms
+        });
+    } catch (error) {
+        console.error('Get current session terms error:', error);
+        res.status(500).json({ success: false, message: 'Server error while retrieving current session terms.' });
+    }
+});
+
 // GET /api/terms/:id - Get a specific term by ID
 router.get('/:id', auth, async (req, res) => {
     try {
