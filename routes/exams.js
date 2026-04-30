@@ -575,7 +575,7 @@ router.post(
         id: newExamId,
         title,
         exam_type: examType,
-        assessment_type: examType === "External" ? null : assessment_type,
+        assessment_type: examType === "External" ? 'exam' : assessment_type,
         subject_type: subjectType,
         class_subject_id:
           subjectType === "Single-Subject"

@@ -230,66 +230,92 @@ router.get("/fees-summary", [auth, authorize(["Parent"])], async (req, res) => {
       return res.json({ success: true, data: [] });
     }
 
-    // 3. Process fees for each child
+    // 3. Determine the current academic session based on the first child's branch
+    const branchId = children.length > 0 ? children[0].branch_id : null;
+    let currentSession = null;
+
+    if (branchId) {
+      const [activeTermRows] = await pool.query(
+        "SELECT session FROM terms WHERE is_active = TRUE AND branch_id = ? LIMIT 1",
+        [branchId]
+      );
+      if (activeTermRows.length > 0) {
+        currentSession = activeTermRows[0].session;
+      }
+    }
+
+    if (!currentSession) {
+      const [globalActiveTermRows] = await pool.query(
+        "SELECT session FROM terms WHERE is_active = TRUE AND branch_id IS NULL LIMIT 1"
+      );
+      if (globalActiveTermRows.length > 0) {
+        currentSession = globalActiveTermRows[0].session;
+      }
+    }
+
+    if (!currentSession) {
+      return res.json({ success: true, data: [] });
+    }
+
+    // Fetch all terms for the current session
+    const [sessionTerms] = await pool.query(
+      "SELECT id, name, end_date FROM terms WHERE session = ? AND (branch_id = ? OR branch_id IS NULL) ORDER BY start_date ASC LIMIT 3",
+      [currentSession, branchId]
+    );
+
+    // 4. Process fees for each term and each child
     let allFees = [];
     const today = new Date();
 
-    for (const child of children) {
-      // Find the active term for the child's branch
-      const [activeTermRows] = await pool.query(
-        "SELECT id, name as term_name, end_date FROM terms WHERE is_active = TRUE AND (branch_id = ? OR branch_id IS NULL) ORDER BY branch_id DESC LIMIT 1",
-        [child.branch_id]
-      );
+    for (const term of sessionTerms) {
+      for (const child of children) {
+        // Get total fees due and total amount paid for the term
+        const [[{ total_due }]] = await pool.query(
+          "SELECT SUM(amount) as total_due FROM fees WHERE class_id = ? AND term_id = ?",
+          [child.class_id, term.id]
+        );
 
-      if (activeTermRows.length === 0) continue;
-      const activeTerm = activeTermRows[0];
+        const [[{ total_paid }]] = await pool.query(
+          "SELECT SUM(amount_paid) as total_paid FROM payments WHERE student_id = ? AND term_id = ?",
+          [child.id, term.id]
+        );
 
-      // Get total fees due and total amount paid for the term
-      const [[{ total_due }]] = await pool.query(
-        "SELECT SUM(amount) as total_due FROM fees WHERE class_id = ? AND term_id = ?",
-        [child.class_id, activeTerm.id]
-      );
+        const balance = (total_due || 0) - (total_paid || 0);
 
-      const [[{ total_paid }]] = await pool.query(
-        "SELECT SUM(amount_paid) as total_paid FROM payments WHERE student_id = ? AND term_id = ?",
-        [child.id, activeTerm.id]
-      );
+        // Determine overall status for the term
+        let status =
+          balance <= 0
+            ? "Paid"
+            : new Date(term.end_date) < today
+            ? "Overdue"
+            : "Pending";
 
-      const balance = (total_due || 0) - (total_paid || 0);
+        // Get individual fee items for the term
+        const [feeItems] = await pool.query(
+          "SELECT id, name, amount, description FROM fees WHERE class_id = ? AND term_id = ?",
+          [child.class_id, term.id]
+        );
 
-      // Determine overall status for the term
-      let status =
-        balance <= 0
-          ? "Paid"
-          : new Date(activeTerm.end_date) < today
-          ? "Overdue"
-          : "Pending";
-
-      // Get individual fee items for the term
-      const [feeItems] = await pool.query(
-        "SELECT id, name, amount, description FROM fees WHERE class_id = ? AND term_id = ?",
-        [child.class_id, activeTerm.id]
-      );
-
-      feeItems.forEach((fee) => {
-        allFees.push({
-          id: fee.id,
-          payment: fee.name,
-          cost: fee.amount,
-          for: child.name,
-          date: activeTerm.end_date,
-          status: status,
-          description: fee.description || "No description provided.",
-          term: activeTerm.term_name,
-          totalDueForTerm: total_due || 0,
-          totalPaidForTerm: total_paid || 0,
-          termBalance: balance,
-          studentId: child.id,
-          termId: activeTerm.id,
-          parentId: parentId,
-          parentEmail: parentEmail,
+        feeItems.forEach((fee) => {
+          allFees.push({
+            id: fee.id,
+            payment: fee.name,
+            cost: fee.amount,
+            for: child.name,
+            date: term.end_date,
+            status: status,
+            description: fee.description || "No description provided.",
+            term: term.name,
+            totalDueForTerm: total_due || 0,
+            totalPaidForTerm: total_paid || 0,
+            termBalance: balance,
+            studentId: child.id,
+            termId: term.id,
+            parentId: parentId,
+            parentEmail: parentEmail,
+          });
         });
-      });
+      }
     }
 
     allFees.sort((a, b) => new Date(a.date) - new Date(b.date));
@@ -400,27 +426,72 @@ router.get(
       );
       const usersMap = new Map(userRows.map((user) => [user.id, user.email]));
 
-      // Determine term IDs for the fee status query
-      const termIdsForQuery = children
-        .map((child) => activeTermMap.get(child.branch_id) || globalTermId)
-        .filter((id) => id);
+      // Determine the current academic session
+      const branchId = children.length > 0 ? children[0].branch_id : null;
+      let currentSession = null;
 
-      // Fetch fee statuses based on the determined terms
+      if (branchId) {
+        const [activeTermRows] = await pool.query(
+          "SELECT session FROM terms WHERE is_active = TRUE AND branch_id = ? LIMIT 1",
+          [branchId]
+        );
+        if (activeTermRows.length > 0) {
+          currentSession = activeTermRows[0].session;
+        }
+      }
+
+      if (!currentSession) {
+        const [globalActiveTermRows] = await pool.query(
+          "SELECT session FROM terms WHERE is_active = TRUE AND branch_id IS NULL LIMIT 1"
+        );
+        if (globalActiveTermRows.length > 0) {
+          currentSession = globalActiveTermRows[0].session;
+        }
+      }
+
+      if (!currentSession) {
+        // If no session, set empty fees
+        const wardsData = children.map((child) => {
+          const studentLoginId = usersMap.get(child.user_id) || "N/A";
+          return {
+            name: child.name,
+            id: studentLoginId.toUpperCase(),
+            fees: [],
+            missedWork: missedWorkMap.get(child.class_id) || 0,
+            className: child.className,
+            attendance: attendanceMap.get(child.id) || "N/A",
+          };
+        });
+        return res.json({ success: true, data: wardsData });
+      }
+
+      // Fetch all terms for the current session
+      const [sessionTerms] = await pool.query(
+        "SELECT id, name FROM terms WHERE session = ? AND (branch_id = ? OR branch_id IS NULL) ORDER BY start_date ASC LIMIT 3",
+        [currentSession, branchId]
+      );
+
+      // Fetch fee statuses for all terms in session
+      const termIds = sessionTerms.map(t => t.id);
       const [paymentStatusRows] =
-        termIdsForQuery.length > 0
+        termIds.length > 0
           ? await pool.query(
-              "SELECT student_id, status FROM student_payment_statuses WHERE student_id IN (?) AND term_id IN (?) AND status = 'Paid'",
-              [childIds, [...new Set(termIdsForQuery)]] // Use Set to get unique term IDs
+              "SELECT student_id, term_id, status FROM student_payment_statuses WHERE student_id IN (?) AND term_id IN (?)",
+              [childIds, termIds]
             )
           : [[]];
-      const feesMap = new Map(
-        paymentStatusRows.map((p) => [p.student_id, p.status])
-      );
+      const feesMap = new Map();
+      paymentStatusRows.forEach((p) => {
+        feesMap.set(`${p.student_id}-${p.term_id}`, p.status);
+      });
 
       // 5. Map the bulk data back to each child
       const wardsData = children.map((child) => {
         const studentLoginId = usersMap.get(child.user_id) || "N/A";
-        const fees = feesMap.get(child.id) || "Unpaid";
+        const fees = sessionTerms.map(term => ({
+          term: term.name,
+          status: feesMap.get(`${child.id}-${term.id}`) || "Unpaid"
+        }));
         const missedWork = missedWorkMap.get(child.class_id) || 0;
         const attendance = attendanceMap.get(child.id) || "N/A";
 

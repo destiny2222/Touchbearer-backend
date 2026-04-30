@@ -31,6 +31,8 @@ app.use('/api/inventory', require('./routes/inventory'));
 app.use('/api/terms', require('./routes/terms'));
 app.use('/api/fees', require('./routes/fees'));
 app.use('/api/payments', require('./routes/payments'));
+app.use('/api/admin/payments', require('./routes/admin-payments'));
+app.use('/api/admin/revenue', require('./routes/admin-revenue'));
 app.use('/api/make-payment', require('./routes/make-payment'));
 app.use('/api/analytics', require('./routes/analytics'));
 app.use('/api/ai', require('./routes/aiSummary'));

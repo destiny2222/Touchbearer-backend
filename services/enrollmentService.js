@@ -28,6 +28,8 @@ function generatePassword() {
 
 // Main service function
 async function createNewStudentFromEnrollment(formData) {
+
+    console.log('Creating new student from enrollment data:', formData);
     const connection = await pool.getConnection();
     try {
         await connection.beginTransaction();
@@ -51,10 +53,10 @@ async function createNewStudentFromEnrollment(formData) {
             await connection.query('INSERT INTO parents (id, user_id, name, phone, email, dob, residential_address, occupation, workplace_address) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [
                 parent_id,
                 parentUserId,
-                formData.parent_name,
-                formData.parent_phone,
+                formData.father_name || formData.mother_name || `${formData.first_name} ${formData.last_name}'s Parent`,
+                formData.father_phone || formData.mother_phone || null,
                 formData.parent_email,
-                formData.father_dob || null,
+                formData.father_dob || formData.mother_dob || null,
                 formData.parent_residential_address || null,
                 formData.father_occupation || null,
                 formData.father_workplace_address || null
@@ -76,8 +78,8 @@ async function createNewStudentFromEnrollment(formData) {
             id: uuidv4(),
             student_id,
             parent_id,
-            first_name: formData.first_name,
-            last_name: formData.last_name,
+            first_name: formData.other_names,
+            last_name: formData.surname_name,
             other_names: formData.other_names || null,
             surname_name: formData.surname_name || null,
             gender: formData.gender || null,

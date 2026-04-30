@@ -240,6 +240,19 @@ async function initializeDatabase() {
             )
         `;
 
+    const alterNewStudentTable = `
+            ALTER TABLE new_students ADD COLUMN surname_name VARCHAR(255) AFTER last_name;
+            ALTER TABLE new_students ADD COLUMN other_names VARCHAR(255) AFTER surname_name;
+            ALTER TABLE new_students ADD COLUMN gender ENUM('male','female','other') AFTER other_names;
+            ALTER TABLE new_students ADD COLUMN place_of_birth VARCHAR(255) AFTER dob;
+            ALTER TABLE new_students ADD COLUMN tribe VARCHAR(255) AFTER state;
+            ALTER TABLE new_students ADD COLUMN lga VARCHAR(255) AFTER tribe;
+            ALTER TABLE new_students ADD COLUMN blood_group VARCHAR(5) AFTER religion;
+            ALTER TABLE new_students ADD COLUMN genotype VARCHAR(5) AFTER blood_group;
+            ALTER TABLE new_students ADD COLUMN allergies VARCHAR(255) AFTER genotype;
+            ALTER TABLE new_students ADD COLUMN disability VARCHAR(255) AFTER allergies;
+        `;
+
     const createStudentStatusesTable = `
             CREATE TABLE IF NOT EXISTS student_statuses (
                 id INT AUTO_INCREMENT PRIMARY KEY,
@@ -605,10 +618,15 @@ async function initializeDatabase() {
                 term_id VARCHAR(36) NOT NULL,
                 amount_paid DECIMAL(10, 2) NOT NULL,
                 payment_date DATE NOT NULL,
+                reference VARCHAR(255),
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE,
                 FOREIGN KEY (term_id) REFERENCES terms(id) ON DELETE CASCADE
             )
+        `;
+
+    const alterPaymentsAddReference = `
+            ALTER TABLE payments ADD COLUMN IF NOT EXISTS reference VARCHAR(255)
         `;
 
     const createStudentPaymentStatusTable = `
@@ -1031,6 +1049,309 @@ async function initializeDatabase() {
 
     await connection.query(createNewStudentTable);
     console.log("New Students table created");
+
+    // Add missing columns to existing new_students table
+    try {
+      const [newStudentColumns] = await connection.query(
+        `
+                SELECT COLUMN_NAME 
+                FROM INFORMATION_SCHEMA.COLUMNS 
+                WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'new_students'
+            `,
+        [dbName]
+      );
+
+      const existingNewStudentCols = newStudentColumns.map((row) => row.COLUMN_NAME);
+
+      if (!existingNewStudentCols.includes("surname_name")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN surname_name VARCHAR(255) AFTER last_name"
+        );
+        console.log("Added 'surname_name' column to new_students table");
+      }
+      if (!existingNewStudentCols.includes("other_names")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN other_names VARCHAR(255) AFTER surname_name"
+        );
+        console.log("Added 'other_names' column to new_students table");
+      }
+      if (!existingNewStudentCols.includes("gender")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN gender ENUM('male','female','other') AFTER other_names"
+        );
+        console.log("Added 'gender' column to new_students table");
+      }
+      if (!existingNewStudentCols.includes("place_of_birth")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN place_of_birth VARCHAR(255) AFTER dob"
+        );
+        console.log("Added 'place_of_birth' column to new_students table");
+      }
+      if (!existingNewStudentCols.includes("tribe")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN tribe VARCHAR(255) AFTER state"
+        );
+        console.log("Added 'tribe' column to new_students table");
+      }
+      if (!existingNewStudentCols.includes("lga")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN lga VARCHAR(255) AFTER tribe"
+        );
+        console.log("Added 'lga' column to new_students table");
+      }
+      if (!existingNewStudentCols.includes("blood_group")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN blood_group VARCHAR(5) AFTER religion"
+        );
+        console.log("Added 'blood_group' column to new_students table");
+      }
+      if (!existingNewStudentCols.includes("genotype")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN genotype VARCHAR(5) AFTER blood_group"
+        );
+        console.log("Added 'genotype' column to new_students table");
+      }
+      if (!existingNewStudentCols.includes("allergies")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN allergies VARCHAR(255) AFTER genotype"
+        );
+        console.log("Added 'allergies' column to new_students table");
+      }
+      if (!existingNewStudentCols.includes("disability")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN disability VARCHAR(255) AFTER allergies"
+        );
+        console.log("Added 'disability' column to new_students table");
+      }
+      if (!existingNewStudentCols.includes("previous_class")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN previous_class VARCHAR(255) AFTER disability"
+        );
+        console.log("Added 'previous_class' column to new_students table");
+      }
+      if (!existingNewStudentCols.includes("last_term_result")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN last_term_result VARCHAR(255) AFTER previous_class"
+        );
+        console.log("Added 'last_term_result' column to new_students table");
+      }
+
+      if (!existingNewStudentCols.includes("birth_certificate")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN birth_certificate VARCHAR(255) AFTER last_term_result"
+        );
+        console.log("Added 'birth_certificate' column to new_students table");
+      }
+
+      if (!existingNewStudentCols.includes("medical_report")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN medical_report VARCHAR(255) AFTER birth_certificate"
+        );
+        console.log("Added 'medical_report' column to new_students table");
+      }
+      // expelled_or_suspended - likely ENUM or VARCHAR, default 'no'
+      if (!existingNewStudentCols.includes("expelled_or_suspended")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN expelled_or_suspended VARCHAR(10) DEFAULT 'no' AFTER disability"
+        );
+        console.log("Added 'expelled_or_suspended' column to new_students table");
+      }
+
+      // offence_details - TEXT for longer description
+      if (!existingNewStudentCols.includes("offence_details")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN offence_details TEXT AFTER expelled_or_suspended"
+        );
+        console.log("Added 'offence_details' column to new_students table");
+      }
+
+      // applicant_type - e.g., 'parent', 'guardian'
+      if (!existingNewStudentCols.includes("applicant_type")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN applicant_type VARCHAR(50) DEFAULT 'parent' AFTER offence_details"
+        );
+        console.log("Added 'applicant_type' column to new_students table");
+      }
+
+      // parent_residential_address
+      if (!existingNewStudentCols.includes("parent_residential_address")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN parent_residential_address TEXT AFTER applicant_type"
+        );
+        console.log("Added 'parent_residential_address' column to new_students table");
+      }
+
+      // father_name
+      if (!existingNewStudentCols.includes("father_name")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN father_name VARCHAR(255) AFTER parent_residential_address"
+        );
+        console.log("Added 'father_name' column to new_students table");
+      }
+
+      // father_phone
+      if (!existingNewStudentCols.includes("father_phone")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN father_phone VARCHAR(20) AFTER father_name"
+        );
+        console.log("Added 'father_phone' column to new_students table");
+      }
+
+      // father_dob
+      if (!existingNewStudentCols.includes("father_dob")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN father_dob DATE AFTER father_phone"
+        );
+        console.log("Added 'father_dob' column to new_students table");
+      }
+
+      // father_occupation
+      if (!existingNewStudentCols.includes("father_occupation")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN father_occupation VARCHAR(255) AFTER father_dob"
+        );
+        console.log("Added 'father_occupation' column to new_students table");
+      }
+
+      // father_workplace_address
+      if (!existingNewStudentCols.includes("father_workplace_address")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN father_workplace_address TEXT AFTER father_occupation"
+        );
+        console.log("Added 'father_workplace_address' column to new_students table");
+      }
+
+      // mother_name
+      if (!existingNewStudentCols.includes("mother_name")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN mother_name VARCHAR(255) AFTER father_workplace_address"
+        );
+        console.log("Added 'mother_name' column to new_students table");
+      }
+
+      // mother_phone
+      if (!existingNewStudentCols.includes("mother_phone")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN mother_phone VARCHAR(20) AFTER mother_name"
+        );
+        console.log("Added 'mother_phone' column to new_students table");
+      }
+
+      // mother_dob
+      if (!existingNewStudentCols.includes("mother_dob")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN mother_dob DATE AFTER mother_phone"
+        );
+        console.log("Added 'mother_dob' column to new_students table");
+      }
+
+      // mother_occupation
+      if (!existingNewStudentCols.includes("mother_occupation")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN mother_occupation VARCHAR(255) AFTER mother_dob"
+        );
+        console.log("Added 'mother_occupation' column to new_students table");
+      }
+
+      // mother_workplace_address
+      if (!existingNewStudentCols.includes("mother_workplace_address")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN mother_workplace_address TEXT AFTER mother_occupation"
+        );
+        console.log("Added 'mother_workplace_address' column to new_students table");
+      }
+
+      // guardian_name
+      if (!existingNewStudentCols.includes("guardian_name")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN guardian_name VARCHAR(255) AFTER mother_workplace_address"
+        );
+        console.log("Added 'guardian_name' column to new_students table");
+      }
+
+      // guardian_residential_address
+      if (!existingNewStudentCols.includes("guardian_residential_address")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN guardian_residential_address TEXT AFTER guardian_name"
+        );
+        console.log("Added 'guardian_residential_address' column to new_students table");
+      }
+
+      // guardian_phone
+      if (!existingNewStudentCols.includes("guardian_phone")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN guardian_phone VARCHAR(20) AFTER guardian_residential_address"
+        );
+        console.log("Added 'guardian_phone' column to new_students table");
+      }
+
+      // guardian_dob
+      if (!existingNewStudentCols.includes("guardian_dob")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN guardian_dob DATE AFTER guardian_phone"
+        );
+        console.log("Added 'guardian_dob' column to new_students table");
+      }
+
+      // guardian_occupation
+      if (!existingNewStudentCols.includes("guardian_occupation")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN guardian_occupation VARCHAR(255) AFTER guardian_dob"
+        );
+        console.log("Added 'guardian_occupation' column to new_students table");
+      }
+
+      // guardian_workplace_address
+      if (!existingNewStudentCols.includes("guardian_workplace_address")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN guardian_workplace_address TEXT AFTER guardian_occupation"
+        );
+        console.log("Added 'guardian_workplace_address' column to new_students table");
+      }
+
+      // guardian_email
+      if (!existingNewStudentCols.includes("guardian_email")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN guardian_email VARCHAR(255) AFTER guardian_workplace_address"
+        );
+        console.log("Added 'guardian_email' column to new_students table");
+      }
+
+      // emergency_contact_name
+      if (!existingNewStudentCols.includes("emergency_contact_name")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN emergency_contact_name VARCHAR(255) AFTER guardian_email"
+        );
+        console.log("Added 'emergency_contact_name' column to new_students table");
+      }
+
+      // emergency_contact_address
+      if (!existingNewStudentCols.includes("emergency_contact_address")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN emergency_contact_address TEXT AFTER emergency_contact_name"
+        );
+        console.log("Added 'emergency_contact_address' column to new_students table");
+      }
+
+      // emergency_contact_relationship
+      if (!existingNewStudentCols.includes("emergency_contact_relationship")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN emergency_contact_relationship VARCHAR(100) AFTER emergency_contact_address"
+        );
+        console.log("Added 'emergency_contact_relationship' column to new_students table");
+      }
+
+      // emergency_contact_phone
+      if (!existingNewStudentCols.includes("emergency_contact_phone")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN emergency_contact_phone VARCHAR(20) AFTER emergency_contact_relationship"
+        );
+        console.log("Added 'emergency_contact_phone' column to new_students table");
+      }
+    } catch (err) {
+      console.error("Error adding columns to new_students table:", err.message);
+    }
+
     await connection.query(createEventsTable);
     console.log("Events table created");
     await connection.query(createExpensesTable);
@@ -1128,27 +1449,27 @@ async function initializeDatabase() {
     console.log("Questions table recreated with correct schema.");
 
     // After creating the questions table, add this column check
-try {
-  const [questionColumns] = await connection.query(
-    `
+    try {
+      const [questionColumns] = await connection.query(
+        `
       SELECT COLUMN_NAME 
       FROM INFORMATION_SCHEMA.COLUMNS 
       WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'questions'
     `,
-    [dbName]
-  );
+        [dbName]
+      );
 
-  const existingQuestionCols = questionColumns.map((row) => row.COLUMN_NAME);
+      const existingQuestionCols = questionColumns.map((row) => row.COLUMN_NAME);
 
-  if (!existingQuestionCols.includes("question_image_url")) {
-    await connection.query(
-      "ALTER TABLE questions ADD COLUMN question_image_url VARCHAR(500) NULL AFTER question_text"
-    );
-    console.log("Added 'question_image_url' column to questions table");
-  }
-} catch (error) {
-  console.log("Error updating questions table:", error.message);
-}
+      if (!existingQuestionCols.includes("question_image_url")) {
+        await connection.query(
+          "ALTER TABLE questions ADD COLUMN question_image_url VARCHAR(500) NULL AFTER question_text"
+        );
+        console.log("Added 'question_image_url' column to questions table");
+      }
+    } catch (error) {
+      console.log("Error updating questions table:", error.message);
+    }
     await connection.query(createExamResultsTable);
     console.log("Exam results table created");
     await connection.query(createTimetablesTable);
@@ -1209,6 +1530,27 @@ try {
     }
     await connection.query(createPaymentsTable);
     console.log("Payments table created");
+
+    try {
+      const [paymentColumns] = await connection.query(
+        `
+          SELECT COLUMN_NAME 
+          FROM INFORMATION_SCHEMA.COLUMNS 
+          WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'payments'
+        `,
+        [dbName]
+      );
+      const existingPaymentCols = paymentColumns.map((row) => row.COLUMN_NAME);
+      if (!existingPaymentCols.includes("reference")) {
+        await connection.query(
+          "ALTER TABLE payments ADD COLUMN reference VARCHAR(255)"
+        );
+        console.log("Added 'reference' column to payments table");
+      }
+    } catch (error) {
+      console.log("Error updating payments table:", error.message);
+    }
+
     await connection.query(createStudentPaymentStatusTable);
     console.log("Student payment status table created");
     await connection.query(createEbooksTable);
