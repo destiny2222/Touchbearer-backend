@@ -81,8 +81,9 @@ router.post('/', auth, authorize(['SuperAdmin', 'Admin']), async (req, res) => {
     }
 });
 
-// Get all classes
-router.get('/', async (req, res) => {
+// Get classes by branch_id (public)
+router.get('/branch/:branch_id', async (req, res) => {
+    const { branch_id } = req.params;
     try {
         const query = `
             SELECT 
@@ -99,9 +100,98 @@ router.get('/', async (req, res) => {
             FROM classes c
             JOIN branches b ON c.branch_id = b.id
             JOIN staff s ON c.teacher_id = s.id
+            WHERE c.branch_id = ?
             ORDER BY c.created_at DESC
         `;
-        const [classes] = await pool.query(query);
+        const [classes] = await pool.query(query, [branch_id]);
+        res.json({ success: true, data: classes });
+    } catch (error) {
+        console.error('Error fetching classes by branch:', error);
+        res.status(500).json({ success: false, message: 'Server error while fetching classes.' });
+    }
+});
+
+// Get all classes
+router.get('/', auth, authorize(['SuperAdmin', 'Admin', 'Teacher', 'Parent', 'Student']), async (req, res) => {
+    try {
+        let query = `
+            SELECT 
+                c.id,
+                c.name,
+                c.arm,
+                c.total_student,
+                c.school_type,
+                c.branch_id,
+                b.school_name as branch_name,
+                c.teacher_id,
+                s.name as teacher_name,
+                c.created_at
+            FROM classes c
+            JOIN branches b ON c.branch_id = b.id
+            JOIN staff s ON c.teacher_id = s.id
+        `;
+        const queryParams = [];
+
+        if (req.user.roles.includes('Admin')) {
+            const [adminStaff] = await pool.query(
+                'SELECT branch_id FROM staff WHERE user_id = ?',
+                [req.user.id]
+            );
+            if (adminStaff.length === 0) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Admin not associated with any branch.',
+                });
+            }
+            const adminBranchId = adminStaff[0].branch_id;
+            query += ' WHERE c.branch_id = ?';
+            queryParams.push(adminBranchId);
+        } else if (req.user.roles.includes('Teacher')) {
+            const [teacherStaff] = await pool.query(
+                'SELECT branch_id FROM staff WHERE user_id = ?',
+                [req.user.id]
+            );
+            if (teacherStaff.length === 0) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Teacher not associated with any branch.',
+                });
+            }
+            const teacherBranchId = teacherStaff[0].branch_id;
+            query += ' WHERE c.branch_id = ?';
+            queryParams.push(teacherBranchId);
+        } else if (req.user.roles.includes('Student')) {
+            const [student] = await pool.query(
+                'SELECT class_id FROM students WHERE user_id = ?',
+                [req.user.id]
+            );
+            if (student.length === 0) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Student not associated with any class.',
+                });
+            }
+            query += ' WHERE c.id = ?';
+            queryParams.push(student[0].class_id);
+        } else if (req.user.roles.includes('Parent')) {
+            const [children] = await pool.query(
+                'SELECT class_id FROM students WHERE parent_user_id = ?',
+                [req.user.id]
+            );
+            if (children.length === 0) {
+                return res.status(403).json({
+                    success: false,
+                    message: 'Parent not associated with any child.',
+                });
+            }
+            const classIds = children.map(child => child.class_id);
+            query += ` WHERE c.id IN (${classIds.map(() => '?').join(',')})`;
+            queryParams.push(...classIds);
+        }
+
+        query += ' ORDER BY c.created_at DESC';
+
+        const [classes] = await pool.query(query, queryParams);
         res.json({ success: true, data: classes });
     } catch (error) {
         console.error('Error fetching classes:', error);

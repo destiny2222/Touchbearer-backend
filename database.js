@@ -754,10 +754,11 @@ async function initializeDatabase() {
             CREATE TABLE IF NOT EXISTS enrollment_fees (
                 id INT AUTO_INCREMENT PRIMARY KEY,
                 branch_id VARCHAR(36) NOT NULL,
+                program_type VARCHAR(50) NULL,
                 amount DECIMAL(10, 2) NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-                UNIQUE KEY (branch_id),
+                UNIQUE KEY unique_branch_program (branch_id, program_type),
                 FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE
             )
         `;
@@ -1348,6 +1349,21 @@ async function initializeDatabase() {
         );
         console.log("Added 'emergency_contact_phone' column to new_students table");
       }
+      // emergency_contact_phone
+      if (!existingNewStudentCols.includes("user_id")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN user_id VARCHAR(36) AFTER emergency_contact_phone"
+        );
+        console.log("Added 'user_id' column to new_students table");
+      }
+
+      // program_type - e.g., 'Early Years (Nur)', 'Grade School (Pry)', 'Middle | High School (Sec)'
+      if (!existingNewStudentCols.includes("program_type")) {
+        await connection.query(
+          "ALTER TABLE new_students ADD COLUMN program_type VARCHAR(100) AFTER user_id"
+        );
+        console.log("Added 'program_type' column to new_students table");
+      }
     } catch (err) {
       console.error("Error adding columns to new_students table:", err.message);
     }
@@ -1594,6 +1610,69 @@ async function initializeDatabase() {
 
     await connection.query(createEnrollmentFeesTable);
     console.log("Enrollment fees table created");
+
+    try {
+      const [enrollmentFeeColumns] = await connection.query(
+        `SELECT COLUMN_NAME 
+         FROM INFORMATION_SCHEMA.COLUMNS 
+         WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'enrollment_fees'`,
+        [dbName]
+      );
+      const existingEnrollmentFeeCols = enrollmentFeeColumns.map((row) => row.COLUMN_NAME);
+
+      if (!existingEnrollmentFeeCols.includes("program_type")) {
+        // 1. Add the column
+        await connection.query(
+          "ALTER TABLE enrollment_fees ADD COLUMN program_type VARCHAR(100) DEFAULT 'Grade School (Pry)'"
+        );
+        console.log("Added 'program_type' column to enrollment_fees table");
+
+        // 2. Add the composite unique key (if it doesn't already exist)
+        const [indexes] = await connection.query(
+          `SELECT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS 
+             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'enrollment_fees' 
+             AND INDEX_NAME = 'unique_branch_program'`,
+          [dbName]
+        );
+        if (indexes.length === 0) {
+          await connection.query(
+            "ALTER TABLE enrollment_fees ADD CONSTRAINT unique_branch_program UNIQUE (branch_id, program_type)"
+          );
+          console.log("Added unique_branch_program index to enrollment_fees table");
+        }
+
+        // 3. Drop the rogue solo branch_id unique index (if it exists)
+        const [rogueIndex] = await connection.query(
+          `SELECT INDEX_NAME FROM INFORMATION_SCHEMA.STATISTICS 
+             WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'enrollment_fees' 
+             AND INDEX_NAME = 'branch_id' AND NON_UNIQUE = 0`,
+          [dbName]
+        );
+        if (rogueIndex.length > 0) {
+          await connection.query(
+            "ALTER TABLE enrollment_fees DROP INDEX branch_id"
+          );
+          console.log("Dropped rogue solo branch_id index from enrollment_fees table");
+        }
+      }
+    } catch (error) {
+      console.log("Error checking enrollment_fees table:", error.message);
+    }
+
+    try {
+      const [keyCheck] = await connection.query(
+        `SELECT CONSTRAINT_NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'enrollment_fees' AND CONSTRAINT_NAME = 'unique_branch_program'`,
+        [dbName]
+      );
+      if (keyCheck.length === 0) {
+        await connection.query(
+          "ALTER TABLE enrollment_fees ADD UNIQUE KEY unique_branch_program (branch_id, program_type)"
+        );
+        console.log("Added unique key 'unique_branch_program' to enrollment_fees table");
+      }
+    } catch (error) {
+      console.log("Error adding unique key to enrollment_fees table:", error.message);
+    }
 
     // Add exam_id to student_results if it doesn't exist
     try {

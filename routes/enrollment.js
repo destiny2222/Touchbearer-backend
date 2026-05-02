@@ -54,7 +54,8 @@ router.post('/register', async (req, res) => {
     const {
         first_name, last_name, dob, passport, address, nationality,
         state, class_id, branch_id, previous_school, religion,
-        disability, parent_name, parent_phone, parent_email, payment_status
+        disability, parent_name, parent_phone, parent_email, payment_status,
+        program_type
     } = req.body;
 
     // Basic validation
@@ -117,6 +118,7 @@ router.post('/register', async (req, res) => {
         // Step 3: Insert the student's data into the new_students table
         const newStudentData = {
             id: uuidv4(),
+            user_id: studentUserId,
             student_id: studentId, // Storing the generated ID
             parent_id: parentId,
             first_name,
@@ -132,7 +134,8 @@ router.post('/register', async (req, res) => {
             religion,
             disability: disability || null,
             score: 0,
-            payment_status
+            payment_status,
+            program_type: program_type || null
         };
 
         await connection.query('INSERT INTO new_students SET ?', newStudentData);
@@ -402,7 +405,7 @@ router.put('/students/:id', [auth, authorize(['Admin', 'SuperAdmin'])], async (r
 // --- Enrollment Fee Routes ---
 
 // @route   GET /api/enrollment/fees/my-branch
-// @desc    Get the enrollment fee for the admin's branch
+// @desc    Get all enrollment fees for the admin's branch
 // @access  Admin
 router.get('/fees/my-branch', [auth, authorize(['Admin'])], async (req, res) => {
     try {
@@ -412,14 +415,31 @@ router.get('/fees/my-branch', [auth, authorize(['Admin'])], async (req, res) => 
         }
         const branch_id = adminStaff[0].branch_id;
 
-        const [fee] = await pool.query('SELECT amount FROM enrollment_fees WHERE branch_id = ?', [branch_id]);
-        if (fee.length === 0) {
-            return res.status(404).json({ success: false, message: 'Enrollment fee not set for this branch.' });
+        const [fees] = await pool.query('SELECT id, branch_id, program_type, amount FROM enrollment_fees WHERE branch_id = ?', [branch_id]);
+        if (fees.length === 0) {
+            return res.status(404).json({ success: false, message: 'No enrollment fees set for this branch.' });
         }
-        res.json({ success: true, data: fee[0] });
+        res.json({ success: true, data: fees });
     } catch (error) {
         console.error('Get enrollment fee for admin branch error:', error);
         res.status(500).json({ success: false, message: 'Server error while fetching enrollment fee.' });
+    }
+});
+
+// @route   GET /api/enrollment/fees
+// @desc    Get enrollment fees for all branches
+// @access  SuperAdmin
+router.get('/fees', [auth, authorize(['SuperAdmin'])], async (req, res) => {
+    try {
+        const [fees] = await pool.query(`
+            SELECT ef.amount, ef.branch_id, ef.program_type, b.school_name as branch_name
+            FROM enrollment_fees ef
+            JOIN branches b ON ef.branch_id = b.id
+        `);
+        res.json({ success: true, data: fees });
+    } catch (error) {
+        console.error('Get all enrollment fees error:', error);
+        res.status(500).json({ success: false, message: 'Server error while fetching enrollment fees.' });
     }
 });
 
@@ -429,11 +449,11 @@ router.get('/fees/my-branch', [auth, authorize(['Admin'])], async (req, res) => 
 router.get('/fees/:branch_id', async (req, res) => {
     const { branch_id } = req.params;
     try {
-        const [fee] = await pool.query('SELECT amount FROM enrollment_fees WHERE branch_id = ?', [branch_id]);
-        if (fee.length === 0) {
-            return res.status(404).json({ success: false, message: 'Enrollment fee not set for this branch.' });
+       const [fees] = await pool.query('SELECT id, branch_id, program_type, amount FROM enrollment_fees WHERE branch_id = ?', [branch_id]);
+        if (fees.length === 0) {
+            return res.status(404).json({ success: false, message: 'No enrollment fees set for this branch.' });
         }
-        res.json({ success: true, data: fee[0] });
+        res.json({ success: true, data: fees });
     } catch (error) {
         console.error('Get enrollment fee error:', error);
         res.status(500).json({ success: false, message: 'Server error while fetching enrollment fee.' });
@@ -441,35 +461,109 @@ router.get('/fees/:branch_id', async (req, res) => {
 });
 
 // @route   POST /api/enrollment/fees
-// @desc    Create or update the enrollment fee for a branch
-// @access  Admin, SuperAdmin
+// @desc    Create or update enrollment fee for a branch + program type combination
+// @access  Admin (own branch), SuperAdmin (any branch)
 router.post('/fees', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => {
-    const { branch_id, amount } = req.body;
+    let { branch_id, amount, program_type } = req.body;
 
-    if (!branch_id || amount === undefined) {
-        return res.status(400).json({ success: false, message: 'Branch ID and amount are required.' });
+    // --- Validate required fields ---
+    if (!branch_id || amount === undefined || amount === null) {
+        return res.status(400).json({
+            success: false,
+            message: 'Branch ID and amount are required.'
+        });
+    }
+
+    // Convert empty string program_type to NULL (consistent DB storage)
+    if (program_type === '') program_type = null;
+
+
+    console.log('Set enrollment fee request:', { branch_id, amount, program_type, user: req.user.id });
+    // Validate amount: must be a non-negative number (or positive, depending on business rule)
+    const numericAmount = Number(amount);
+    if (isNaN(numericAmount) || numericAmount < 0) {
+        return res.status(400).json({
+            success: false,
+            message: 'Amount must be a valid non-negative number.'
+        });
     }
 
     try {
+        // --- Authorization for Admin (must belong to the target branch) ---
         if (req.user.roles.includes('Admin')) {
-            const [adminStaff] = await pool.query('SELECT branch_id FROM staff WHERE user_id = ?', [req.user.id]);
+            const [adminStaff] = await pool.query(
+                'SELECT branch_id FROM staff WHERE user_id = ?',
+                [req.user.id]
+            );
             if (adminStaff.length === 0 || adminStaff[0].branch_id !== branch_id) {
-                return res.status(403).json({ success: false, message: 'You are not authorized to set the fee for this branch.' });
+                return res.status(403).json({
+                    success: false,
+                    message: 'You are not authorized to set the fee for this branch.'
+                });
             }
         }
 
-        const query = `
-            INSERT INTO enrollment_fees (branch_id, amount) 
-            VALUES (?, ?) 
+        // --- Verify that the branch exists ---
+        const [branchCheck] = await pool.query(
+            'SELECT id FROM branches WHERE id = ?',
+            [branch_id]
+        );
+        if (branchCheck.length === 0) {
+            return res.status(404).json({
+                success: false,
+                message: 'Branch not found.'
+            });
+        }
+        // The unique key (branch_id, program_type) decides whether a new row is created or updated.
+        const insertQuery = `
+            INSERT INTO enrollment_fees (branch_id, program_type, amount)
+            VALUES (?, ?, ?)
             ON DUPLICATE KEY UPDATE amount = ?
         `;
-        await pool.query(query, [branch_id, amount, amount]);
 
-        res.json({ success: true, message: 'Enrollment fee set successfully.' });
+        console.log('Executing query:', insertQuery, [branch_id, program_type, numericAmount, numericAmount]);
+        const [result] = await pool.query(insertQuery, [
+            branch_id,
+            program_type,
+            numericAmount,
+            numericAmount
+        ]);
+
+        console.log('Query result:', result);
+
+        // --- Determine if a new row was created or an existing one was updated ---
+        const isNew = result.affectedRows === 1 && result.insertId;   // INSERT happened
+        const statusCode = isNew ? 201 : 200;
+        const action = isNew ? 'created' : 'updated';
+
+        // --- Fetch and return the actual fee record (including possible defaults) ---
+        const [feeRows] = await pool.query(
+            `SELECT id, branch_id, program_type, amount, created_at, updated_at
+             FROM enrollment_fees
+             WHERE branch_id = ? AND (program_type = ? OR (program_type IS NULL AND ? IS NULL))`,
+            [branch_id, program_type, program_type]
+        );
+        const fee = feeRows[0] || null;
+
+        res.status(statusCode).json({
+            success: true,
+            message: `Enrollment fee ${action} successfully.`,
+            data: fee
+        });
 
     } catch (error) {
         console.error('Set enrollment fee error:', error);
-        res.status(500).json({ success: false, message: 'Server error while setting enrollment fee.' });
+        // Handle unexpected duplicate errors gracefully (though ON DUPLICATE KEY prevents them)
+        if (error.code === 'ER_DUP_ENTRY') {
+            return res.status(409).json({
+                success: false,
+                message: 'Duplicate entry conflict (should not happen with ON DUPLICATE KEY).'
+            });
+        }
+        res.status(500).json({
+            success: false,
+            message: 'Server error while setting enrollment fee.'
+        });
     }
 });
 

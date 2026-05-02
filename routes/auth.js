@@ -341,6 +341,7 @@ router.post('/student/login', async (req, res) => {
             success: true,
             token,
             student: studentData,
+            role: userRoles,
             message: 'Login successful'
         });
 

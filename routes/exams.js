@@ -1569,11 +1569,12 @@ router.get(
                 er.answered_questions,
                 er.submitted_at,
                 er.published,
-                s.first_name,
-                s.last_name
+                COALESCE(s.first_name, ns.first_name) AS first_name,
+                COALESCE(s.last_name, ns.last_name) AS last_name
             FROM exam_results er
             JOIN users u ON er.student_id = u.id
-            JOIN students s ON u.id = s.user_id
+            LEFT JOIN students s ON u.id = s.user_id
+            LEFT JOIN new_students ns ON u.id = ns.user_id
             WHERE er.exam_id = ?
         `;
 
@@ -1631,15 +1632,16 @@ router.get(
                 er.answered_questions,
                 er.submitted_at,
                 er.published,
-                s.first_name,
-                s.last_name
+                COALESCE(s.first_name, ns.first_name) AS first_name,
+                COALESCE(s.last_name, ns.last_name) AS last_name
             FROM exam_results er
             JOIN users u ON er.student_id = u.id
-            JOIN students s ON u.id = s.user_id
-            WHERE er.exam_id = ? AND s.class_id IN (?)
+            LEFT JOIN students s ON u.id = s.user_id
+            LEFT JOIN new_students ns ON u.id = ns.user_id
+            WHERE er.exam_id = ? AND (s.class_id IN (?) OR ns.class_id IN (?))
         `;
 
-      const [results] = await pool.query(query, [examId, teacherClassIds]);
+      const [results] = await pool.query(query, [examId, teacherClassIds, teacherClassIds]);
       res.json({ success: true, data: results });
     } catch (err) {
       console.error("Error fetching exam results for teacher:", err);

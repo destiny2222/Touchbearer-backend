@@ -37,17 +37,31 @@ async function createNewStudentFromEnrollment(formData) {
         // Step 1: Find or Create Parent
         let [parent] = await connection.query('SELECT * FROM parents WHERE email = ?', [formData.parent_email]);
         let parent_id;
+        let parentUserId;
 
         if (parent.length > 0) {
             parent_id = parent[0].id;
+            parentUserId = parent[0].user_id;
         } else {
-            const parentUserId = uuidv4();
-            const tempParentPassword = generatePassword();
-            const hashedParentPassword = await bcrypt.hash(tempParentPassword, 10);
-            await connection.query('INSERT INTO users (id, email, password) VALUES (?, ?, ?)', [parentUserId, formData.parent_email, hashedParentPassword]);
+            const [existingUser] = await connection.query('SELECT id FROM users WHERE email = ?', [formData.parent_email]);
+            
+            if (existingUser.length > 0) {
+                parentUserId = existingUser[0].id;
+                const [parentRole] = await connection.query("SELECT id FROM roles WHERE name = 'Parent'");
+                const [existingRole] = await connection.query('SELECT role_id FROM user_roles WHERE user_id = ?', [parentUserId]);
+                const hasParentRole = existingRole.some(er => er.role_id === parentRole[0].id);
+                if (!hasParentRole) {
+                    await connection.query('INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)', [parentUserId, parentRole[0].id]);
+                }
+            } else {
+                parentUserId = uuidv4();
+                const tempParentPassword = formData.father_phone || formData.mother_phone || generatePassword();
+                const hashedParentPassword = await bcrypt.hash(tempParentPassword, 10);
+                await connection.query('INSERT INTO users (id, email, password) VALUES (?, ?, ?)', [parentUserId, formData.parent_email, hashedParentPassword]);
 
-            const [parentRole] = await connection.query("SELECT id FROM roles WHERE name = 'Parent'");
-            await connection.query('INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)', [parentUserId, parentRole[0].id]);
+                const [parentRole] = await connection.query("SELECT id FROM roles WHERE name = 'Parent'");
+                await connection.query('INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)', [parentUserId, parentRole[0].id]);
+            }
 
             parent_id = uuidv4();
             await connection.query('INSERT INTO parents (id, user_id, name, phone, email, dob, residential_address, occupation, workplace_address) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [
@@ -128,6 +142,7 @@ async function createNewStudentFromEnrollment(formData) {
             emergency_contact_address: formData.emergency_contact_address || null,
             emergency_contact_relationship: formData.emergency_contact_relationship || null,
             emergency_contact_phone: formData.emergency_contact_phone || null,
+            user_id: studentUserId,
             payment_status: 'paid',
         };
         await connection.query('INSERT INTO new_students SET ?', newStudentData);
