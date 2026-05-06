@@ -5,6 +5,7 @@ const { v4: uuidv4 } = require('uuid');
 const { pool } = require('../database');
 const auth = require('../middleware/auth');
 const { createNewStudentFromEnrollment } = require('../services/enrollmentService');
+const NotificationService = require('../services/notificationService');
 
 // ---------- Helper: Paystack request ----------
 const paystackRequest = (options, params = null) => {
@@ -150,6 +151,35 @@ router.post('/verify', async (req, res) => {
       }
       actionResult = { message: 'Enrollment successful!', data: result.data };
 
+      // Send payment received notification to parent
+      const paymentNotificationData = {
+        parentEmail: metadata.enrollment_data.parent_email,
+        parentName: metadata.enrollment_data.father_name || metadata.enrollment_data.mother_name || 'Parent',
+        amount: amountInNaira,
+        reference,
+        paymentFor: 'Enrollment',
+        studentName: `${metadata.enrollment_data.surname_name} ${metadata.enrollment_data.other_names || ''}`.trim(),
+        generatedStudentId: result.data?.student_id,
+        password: result.data?.temporary_password
+      };
+      NotificationService.notifyPaymentReceived(paymentNotificationData).catch(err => {
+        console.error('Failed to send payment received notification:', err);
+      });
+
+      // Send admin notification for new enrollment
+      const [branchRows] = await pool.query('SELECT site_name FROM branches WHERE id = ?', [metadata.enrollment_data.branch_id]);
+      NotificationService.notifyAdminNewEnrollment({
+        studentName: `${metadata.enrollment_data.surname_name} ${metadata.enrollment_data.other_names || ''}`.trim(),
+        parentName: metadata.enrollment_data.father_name || metadata.enrollment_data.mother_name || 'Parent',
+        parentEmail: metadata.enrollment_data.parent_email,
+        parentPhone: metadata.enrollment_data.father_phone || metadata.enrollment_data.mother_phone,
+        amount: amountInNaira,
+        reference,
+        branchName: branchRows[0]?.site_name
+      }).catch(err => {
+        console.error('Failed to send admin enrollment notification:', err);
+      });
+
     } else if (metadata.payment_for === 'school_fees') {
       const { student_id, term_id } = metadata;
       if (!student_id || !term_id) throw new Error('Missing student_id or term_id');
@@ -187,6 +217,42 @@ router.post('/verify', async (req, res) => {
         );
       }
       actionResult = { message: 'School fees recorded successfully!' };
+
+      // Send school fees payment notification to parent
+      const [[studentInfo]] = await pool.query(
+        `SELECT CONCAT(s.first_name, ' ', s.last_name) as student_name, p.email as parent_email, p.name as parent_name, t.name as term_name, t.session as academic_year
+         FROM students s
+         JOIN parents p ON s.parent_id = p.id
+         JOIN terms t ON t.id = ?
+         WHERE s.id = ?`,
+        [term_id, student_id]
+      );
+      if (studentInfo?.parent_email) {
+        NotificationService.notifySchoolFeesPayment({
+          parentEmail: studentInfo.parent_email,
+          parentName: studentInfo.parent_name,
+          amount: amountInNaira,
+          paymentDate: new Date(paid_at).toLocaleString(),
+          studentName: studentInfo.student_name,
+          term: studentInfo.term_name,
+          academicYear: studentInfo.academic_year,
+          transactionId: reference
+        }).catch(err => {
+          console.error('Failed to send school fees notification:', err);
+        });
+      }
+
+      NotificationService.notifyAdminSchoolFeesPayment({
+        studentName: studentInfo.student_name,
+        parentName: studentInfo.parent_name,
+        amount: amountInNaira,
+        paymentDate: new Date(paid_at).toLocaleString(),
+        term: studentInfo.term_name,
+        academicYear: studentInfo.academic_year,
+        transactionId: reference
+      }).catch(err => {
+        console.error('Failed to send admin school fees notification:', err);
+      });
 
     } else if (metadata.payment_for === 'book_purchase') {
       const { student_id, book_id, parent_id } = metadata;
