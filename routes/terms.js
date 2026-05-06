@@ -25,6 +25,31 @@ router.get('/', auth, async (req, res) => {
             }
         }
 
+        
+        if (req.user.roles.includes('Teacher')) {
+            const [adminStaff] = await pool.query('SELECT branch_id FROM staff WHERE user_id = ?', [req.user.id]);
+            if (adminStaff.length > 0 && adminStaff[0].branch_id) {
+                query += ' WHERE branch_id = ?';
+                queryParams.push(adminStaff[0].branch_id);
+            }
+        }
+
+        if (req.user.roles.includes('Student')) {
+            const [adminStaff] = await pool.query('SELECT branch_id FROM students WHERE user_id = ?', [req.user.id]);
+            if (adminStaff.length > 0 && adminStaff[0].branch_id) {
+                query += ' WHERE branch_id = ?';
+                queryParams.push(adminStaff[0].branch_id);
+            }
+        }
+
+        if (req.user.roles.includes('SuperAdmin') && !req.user.roles.includes('Admin') && req.query.branch_id) {
+            query += query.includes('WHERE') ? ' AND' : ' WHERE';
+            query += ' branch_id = ?';
+            queryParams.push(req.query.branch_id);
+        }
+
+
+
         query += ' ORDER BY start_date DESC'; // Show newest first
 
         const [terms] = await pool.query(query, queryParams);
