@@ -344,6 +344,9 @@ router.get("/", auth, authorize(["SuperAdmin", "Admin"]), async (req, res) => {
       const adminBranchId = adminStaff[0].branch_id;
       query += " WHERE s.branch_id = ?";
       queryParams.push(adminBranchId);
+    } else if (req.user.roles.includes("SuperAdmin") && req.query.branch_id) {
+      query += " WHERE s.branch_id = ?";
+      queryParams.push(req.query.branch_id);
     }
 
     query += " ORDER BY s.created_at DESC";
