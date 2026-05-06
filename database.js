@@ -18,6 +18,7 @@ const pool = mysql.createPool({
   connectionLimit: 10000,
   ...dbConfig,
   database: dbName,
+  timezone: '+01:00',
 });
 
 async function initializeDatabase() {
@@ -372,6 +373,7 @@ async function initializeDatabase() {
                 class_id VARCHAR(36),
                 branch_id VARCHAR(36) NOT NULL,
                 exam_date_time DATETIME NOT NULL,
+                exam_end_datetime DATETIME NULL,
                 duration_minutes INT NOT NULL,
                 created_by VARCHAR(36) NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -405,6 +407,8 @@ async function initializeDatabase() {
                 total_questions INT NOT NULL,
                 answered_questions INT NOT NULL,
                 answers JSON,
+                started_at DATETIME NULL,
+                time_spent_minutes INT NULL,
                 submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 published BOOLEAN DEFAULT FALSE,
                 published_by VARCHAR(36),
@@ -1452,6 +1456,12 @@ async function initializeDatabase() {
         );
         console.log("Added 'duration_minutes' column to exams table");
       }
+      if (!existingExamCols.includes("exam_end_datetime")) {
+        await connection.query(
+          "ALTER TABLE exams ADD COLUMN exam_end_datetime DATETIME NULL AFTER exam_date_time"
+        );
+        console.log("Added 'exam_end_datetime' column to exams table");
+      }
     } catch (error) {
       console.log("Error updating exams table:", error.message);
     }
@@ -1488,6 +1498,36 @@ async function initializeDatabase() {
     }
     await connection.query(createExamResultsTable);
     console.log("Exam results table created");
+
+    // Add/update columns in the exam_results table
+    try {
+      const [resultColumns] = await connection.query(
+        `
+                SELECT COLUMN_NAME
+                FROM INFORMATION_SCHEMA.COLUMNS
+                WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'exam_results'
+            `,
+        [dbName]
+      );
+
+      const existingResultCols = resultColumns.map((row) => row.COLUMN_NAME);
+
+      if (!existingResultCols.includes("started_at")) {
+        await connection.query(
+          "ALTER TABLE exam_results ADD COLUMN started_at DATETIME NULL AFTER answers"
+        );
+        console.log("Added 'started_at' column to exam_results table");
+      }
+      if (!existingResultCols.includes("time_spent_minutes")) {
+        await connection.query(
+          "ALTER TABLE exam_results ADD COLUMN time_spent_minutes INT NULL AFTER started_at"
+        );
+        console.log("Added 'time_spent_minutes' column to exam_results table");
+      }
+    } catch (error) {
+      console.log("Error updating exam_results table:", error.message);
+    }
+
     await connection.query(createTimetablesTable);
     console.log("Timetables table created");
     await connection.query(createAssignmentsTable);
