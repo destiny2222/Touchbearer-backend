@@ -148,6 +148,8 @@ function getOrdinal(n) {
   return n + (s[(v - 20) % 10] || s[v] || s[0]);
 }
 
+// GET /api/parents - Get parents
+
 router.get(
   "/",
   [auth, authorize(["SuperAdmin", "Admin"])],
@@ -157,15 +159,21 @@ router.get(
       let queryParams = [];
 
       if (req.user.roles.includes("SuperAdmin")) {
-        // SuperAdmin sees all parents
+        // SuperAdmin sees all parents, optionally filtered by branch
+        let branchFilter = "";
+        if (req.query.branch_id) {
+          branchFilter = " JOIN students s ON p.id = s.parent_id WHERE s.branch_id = ?";
+          queryParams.push(req.query.branch_id);
+        }
         query = `
           SELECT DISTINCT p.id, p.name, p.email, p.phone, u.created_at
           FROM parents p
           JOIN users u ON p.user_id = u.id
+          ${branchFilter}
           ORDER BY u.created_at DESC
         `;
       } else if (req.user.roles.includes("Admin")) {
-        // Admin sees all parents (including those without children)
+        // Admin sees parents in their branch
         const [adminStaff] = await pool.query(
           "SELECT branch_id FROM staff WHERE user_id = ?",
           [req.user.id]
@@ -176,15 +184,24 @@ router.get(
             message: "Admin not associated with a branch.",
           });
         }
+        const adminBranchId = adminStaff[0].branch_id;
 
-        // Admin can see all parents in the system
+        let branchFilter = " JOIN students s ON p.id = s.parent_id WHERE s.branch_id = ?";
+        queryParams.push(adminBranchId);
+        if (req.query.branch_id && req.query.branch_id != adminBranchId) {
+          return res.status(403).json({
+            success: false,
+            message: "Admins cannot query other branches.",
+          });
+        }
+
         query = `
           SELECT DISTINCT p.id, p.name, p.email, p.phone, u.created_at
           FROM parents p
           JOIN users u ON p.user_id = u.id
+          ${branchFilter}
           ORDER BY u.created_at DESC
         `;
-        queryParams = [];
       }
 
       const [parents] = await pool.query(query, queryParams);
