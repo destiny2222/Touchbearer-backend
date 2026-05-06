@@ -79,7 +79,7 @@ async function createNewStudentFromEnrollment(formData) {
 
         // Step 2: Create User for New Student
         const student_id = await generateStudentId();
-        const temporary_password = generatePassword();
+        const temporary_password = formData.father_phone || formData.mother_phone || generatePassword();
         const hashedStudentPassword = await bcrypt.hash(temporary_password, 10);
         const studentUserId = uuidv4();
         await connection.query('INSERT INTO users (id, email, password) VALUES (?, ?, ?)', [studentUserId, student_id, hashedStudentPassword]);
