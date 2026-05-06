@@ -5,6 +5,7 @@ const { v4: uuidv4 } = require("uuid");
 const { pool } = require("../database");
 const auth = require("../middleware/auth");
 const authorize = require("../middleware/authorize");
+const NotificationService = require("../services/notificationService");
 
 async function getAdminBranchId(userId) {
   const [rows] = await pool.query(
@@ -482,6 +483,7 @@ router.put(
       address,
       nationality,
       state,
+      gender,
       class_id,
       branch_id,
       religion,
@@ -539,6 +541,7 @@ router.put(
       if (branch_id) updateFields.branch_id = branch_id;
       if (religion) updateFields.religion = religion;
       if (disability) updateFields.disability = disability;
+      if (gender) updateFields.gender = gender;
 
       if (Object.keys(updateFields).length > 0) {
         await connection.query("UPDATE students SET ? WHERE id = ?", [
@@ -651,6 +654,9 @@ router.get(
         if (!adminBranchId) return res.json({ success: true, data: [] });
         query += " AND s.branch_id = ?";
         params.push(adminBranchId);
+      } else if (req.user.roles.includes("SuperAdmin") && req.query.branch_id) {
+        query += " AND s.branch_id = ?";
+        params.push(req.query.branch_id);
       }
       query += " ORDER BY s.first_name ASC, s.last_name ASC";
       const [rows] = await pool.query(query, params);
@@ -733,6 +739,9 @@ router.post(
         }
       }
 
+      // Generate new student ID using same format as direct creation
+      const generatedStudentId = await generateStudentId(ns.branch_id);
+
       // Fetch the user's account by student_id (stored as users.email)
       const [userRows] = await connection.query(
         "SELECT id FROM users WHERE email = ?",
@@ -745,6 +754,12 @@ router.post(
           .json({ success: false, message: "Student user account not found." });
       }
       const userId = userRows[0].id;
+
+      // Update user's email to new student ID
+      await connection.query("UPDATE users SET email = ? WHERE id = ?", [
+        generatedStudentId,
+        userId,
+      ]);
 
       // Update role from NewStudent to Student
       const [studentRole] = await connection.query(
@@ -768,6 +783,23 @@ router.post(
         [userId, studentRole[0].id]
       );
 
+      // Fetch parent info before committing for notification
+      const [parentRows] = await connection.query(
+        "SELECT p.email as parent_email, p.phone as parent_phone, p.name as parent_name FROM parents p WHERE p.id = ?",
+        [ns.parent_id]
+      );
+      const [branchRows] = await connection.query(
+        "SELECT site_name FROM branches WHERE id = ?",
+        [ns.branch_id]
+      );
+      const [classRows] = await connection.query(
+        "SELECT name FROM classes WHERE id = ?",
+        [ns.class_id]
+      );
+      const parentInfo = parentRows[0] || {};
+      const branchName = branchRows[0]?.site_name;
+      const className = classRows[0]?.name;
+
       // Create student row
       const studentData = {
         id: uuidv4(),
@@ -789,6 +821,7 @@ router.post(
         last_term_result: ns.last_term_result,
         birth_certificate: ns.birth_certificate,
         medical_report: ns.medical_report,
+        gender: ns.gender,
       };
       await connection.query("INSERT INTO students SET ?", studentData);
 
@@ -798,10 +831,44 @@ router.post(
       ]);
 
       await connection.commit();
+
+      // Send notifications after successful commit
+      if (parentInfo.parent_email) {
+        const password = ns.father_phone || ns.mother_phone || generatedStudentId;
+        const studentName = `${ns.first_name} ${ns.last_name}`.trim();
+
+        // Notify parent about student admission
+        NotificationService.notifyStudentAdmitted({
+          parentEmail: parentInfo.parent_email,
+          parentPhone: parentInfo.parent_phone,
+          parentName: parentInfo.parent_name || 'Parent',
+          studentName,
+          studentId: generatedStudentId,
+          branchName,
+          className,
+          password,
+          parentUsername: parentInfo.parent_email
+        }).catch(err => {
+          console.error('Failed to send student admission notification:', err);
+        });
+
+        // Notify admin about migrated student
+        NotificationService.notifyAdminStudentMigrated({
+          studentName,
+          studentId: generatedStudentId,
+          parentEmail: parentInfo.parent_email,
+          branchName,
+          className,
+          adminName: req.user.name || 'Admin'
+        }).catch(err => {
+          console.error('Failed to send admin migration notification:', err);
+        });
+      }
+
       return res.json({
         success: true,
         message: "Student migrated successfully.",
-        data: { id: studentData.id },
+        data: { id: studentData.id, studentId: generatedStudentId },
       });
     } catch (err) {
       await connection.rollback();
