@@ -2621,6 +2621,9 @@ router.get(
         if (!adminBranchId) return res.json({ success: true, data: [] });
         query += " AND s.branch_id = ?";
         params.push(adminBranchId);
+      } else if (req.user.roles.includes("SuperAdmin") && !req.user.roles.includes("Admin") && req.query.branch_id) {
+        query += " AND s.branch_id = ?";
+        params.push(req.query.branch_id);
       }
       
       // Authorization: Teacher can only see students they teach
