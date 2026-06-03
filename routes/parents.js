@@ -159,21 +159,26 @@ router.get(
       let queryParams = [];
 
       if (req.user.roles.includes("SuperAdmin")) {
-        // SuperAdmin sees all parents, optionally filtered by branch
-        let branchFilter = "";
         if (req.query.branch_id) {
-          branchFilter = " JOIN students s ON p.id = s.parent_id WHERE s.branch_id = ?";
+          query = `
+            SELECT DISTINCT p.id, p.name, p.email, p.phone, u.created_at
+            FROM parents p
+            JOIN users u ON p.user_id = u.id
+            LEFT JOIN students s ON p.id = s.parent_id
+            WHERE s.branch_id = ? OR s.id IS NULL
+            ORDER BY u.created_at DESC
+          `;
           queryParams.push(req.query.branch_id);
+        } else {
+          query = `
+            SELECT DISTINCT p.id, p.name, p.email, p.phone, u.created_at
+            FROM parents p
+            JOIN users u ON p.user_id = u.id
+            LEFT JOIN students s ON p.id = s.parent_id
+            ORDER BY u.created_at DESC
+          `;
         }
-        query = `
-          SELECT DISTINCT p.id, p.name, p.email, p.phone, u.created_at
-          FROM parents p
-          JOIN users u ON p.user_id = u.id
-          ${branchFilter}
-          ORDER BY u.created_at DESC
-        `;
       } else if (req.user.roles.includes("Admin")) {
-        // Admin sees parents in their branch
         const [adminStaff] = await pool.query(
           "SELECT branch_id FROM staff WHERE user_id = ?",
           [req.user.id]
@@ -186,8 +191,6 @@ router.get(
         }
         const adminBranchId = adminStaff[0].branch_id;
 
-        let branchFilter = " JOIN students s ON p.id = s.parent_id WHERE s.branch_id = ?";
-        queryParams.push(adminBranchId);
         if (req.query.branch_id && req.query.branch_id != adminBranchId) {
           return res.status(403).json({
             success: false,
@@ -199,9 +202,11 @@ router.get(
           SELECT DISTINCT p.id, p.name, p.email, p.phone, u.created_at
           FROM parents p
           JOIN users u ON p.user_id = u.id
-          ${branchFilter}
+          LEFT JOIN students s ON p.id = s.parent_id
+          WHERE s.branch_id = ? OR s.id IS NULL
           ORDER BY u.created_at DESC
         `;
+        queryParams.push(adminBranchId);
       }
 
       const [parents] = await pool.query(query, queryParams);
