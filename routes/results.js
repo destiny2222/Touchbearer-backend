@@ -626,7 +626,7 @@ router.get(
           position: "N/A",
           total_students: 0,
           results: [],
-          config: { school_type: "Grade School" },
+          config: { school_type: resultClassRow.school_type},
           skills: { Affective: [], Psychomotor: [] },
           comments: { teacher_comment: "", principal_comment: "" },
           cumulative: {
@@ -645,7 +645,7 @@ router.get(
       //    Always filter by published=TRUE since this is a student-facing endpoint.
       const studentOnlyQuery = `
         SELECT sr.student_id, sr.class_id, sr.subject_id, cs.name as subject_name,
-               sr.assessment_type, sr.score, sr.school_type
+               sr.assessment_type, sr.score
         FROM student_results sr
         JOIN class_subjects cs ON sr.subject_id = cs.id
         WHERE sr.student_id = ? AND sr.term_id = ? AND sr.published = TRUE
@@ -658,6 +658,8 @@ router.get(
 
       const [resultClassInfo] = await connection.query("SELECT name, arm, school_type FROM classes WHERE id = ?", [resultClassId]);
       const resultClassRow = resultClassInfo.length > 0 ? resultClassInfo[0] : classInfo[0];
+
+      console.log("Student's own results for the term:", resultClassRow, classInfo[0], studentOwnResults);
 
       // 4. Build cumulative (previous terms) data structures.
       const newCumulativeResultsBySubject = {};
@@ -770,7 +772,7 @@ router.get(
       // 6. Fetch ALL classmates' results for this term (needed for ranking & subject stats).
       const [allResults] = await connection.query(
         `SELECT sr.student_id, sr.subject_id, cs.name as subject_name,
-                sr.assessment_type, sr.score, sr.school_type
+                sr.assessment_type, sr.score
          FROM student_results sr
          JOIN class_subjects cs ON sr.subject_id = cs.id
          WHERE sr.class_id = ? AND sr.term_id = ?`,
@@ -779,13 +781,9 @@ router.get(
 
       // 7. Process all results into nested structure for ranking
       const resultsByStudent = {};
-      let currentStudentSchoolType = resultClassRow.school_type || "Grade School";
 
       allResults.forEach((r) => {
         const { student_id: sid, subject_id: subid } = r;
-        if (sid === parseInt(student_id) && r.school_type) {
-          currentStudentSchoolType = r.school_type;
-        }
         if (!resultsByStudent[sid]) resultsByStudent[sid] = { subjects: {}, total_score: 0 };
         if (!resultsByStudent[sid].subjects[subid])
           resultsByStudent[sid].subjects[subid] = { subject_name: r.subject_name };
@@ -954,7 +952,7 @@ router.get(
           position: getOrdinal(studentRank),
           total_students: allStudentTotals.length,
           results: reportCard,
-          config: { school_type: currentStudentSchoolType },
+          config: { school_type: resultClassRow.school_type || "Grade School" },
           skills: skillsData,
           comments: commentData,
           cumulative: {
@@ -2139,7 +2137,7 @@ router.get(
       //    (may differ from studentData.class_id if they were promoted).
       let studentOnlyQuery = `
         SELECT sr.student_id, sr.class_id, sr.subject_id, cs.name as subject_name,
-               sr.assessment_type, sr.score, sr.school_type
+               sr.assessment_type, sr.score
         FROM student_results sr
         JOIN class_subjects cs ON sr.subject_id = cs.id
         WHERE sr.student_id = ? AND sr.term_id = ?
@@ -2276,7 +2274,7 @@ router.get(
       // 6. Fetch ALL classmates' results for this term (needed for ranking & subject stats).
       let allClassResultsQuery = `
         SELECT sr.student_id, sr.subject_id, cs.name as subject_name,
-               sr.assessment_type, sr.score, sr.school_type
+               sr.assessment_type, sr.score
         FROM student_results sr
         JOIN class_subjects cs ON sr.subject_id = cs.id
         WHERE sr.class_id = ? AND sr.term_id = ?
@@ -2290,13 +2288,9 @@ router.get(
 
       // 7. Process all results into nested structure for ranking
       const resultsByStudent = {};
-      let currentStudentSchoolType = resultClassRow.school_type || "Grade School";
 
       allResults.forEach((r) => {
         const { student_id: sid, subject_id: subid } = r;
-        if (sid === parseInt(student_id) && r.school_type) {
-          currentStudentSchoolType = r.school_type;
-        }
         if (!resultsByStudent[sid]) resultsByStudent[sid] = { subjects: {}, total_score: 0 };
         if (!resultsByStudent[sid].subjects[subid])
           resultsByStudent[sid].subjects[subid] = { subject_name: r.subject_name };
@@ -2465,7 +2459,7 @@ router.get(
           position: getOrdinal(studentRank),
           total_students: allStudentTotals.length,
           results: reportCard,
-          config: { school_type: currentStudentSchoolType },
+          config: { school_type: resultClassRow.school_type || "Grade School" },
           skills: skillsData,
           comments: commentData,
           cumulative: {

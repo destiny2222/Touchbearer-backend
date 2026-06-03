@@ -353,6 +353,76 @@ router.get('/student', auth, authorize(['SuperAdmin', 'Admin', 'Teacher']), asyn
     }
 });
 
+router.get('/my-children', auth, authorize(['Parent']), async (req, res) => {
+    const { start_date, end_date } = req.query;
+
+    try {
+        const [parent] = await pool.query(
+            'SELECT id FROM parents WHERE user_id = ?',
+            [req.user.id]
+        );
+        if (parent.length === 0) {
+            return res.status(404).json({ success: false, message: 'Parent not found' });
+        }
+        const parentId = parent[0].id;
+
+        const [children] = await pool.query(
+            `SELECT s.id, s.first_name, s.last_name, s.class_id, c.name as class_name
+             FROM students s
+             JOIN classes c ON s.class_id = c.id
+             WHERE s.parent_id = ?`,
+            [parentId]
+        );
+
+        if (children.length === 0) {
+            return res.json({ success: true, data: [] });
+        }
+
+        const childIds = children.map(c => c.id);
+        let attendanceQuery = `
+            SELECT sa.student_id, sa.date, sa.status
+            FROM student_attendance sa
+            WHERE sa.student_id IN (?)
+        `;
+        const queryParams = [childIds];
+
+        if (start_date && end_date) {
+            attendanceQuery += ' AND sa.date BETWEEN ? AND ?';
+            queryParams.push(start_date, end_date);
+        } else if (start_date) {
+            attendanceQuery += ' AND sa.date >= ?';
+            queryParams.push(start_date);
+        } else if (end_date) {
+            attendanceQuery += ' AND sa.date <= ?';
+            queryParams.push(end_date);
+        }
+
+        attendanceQuery += ' ORDER BY sa.student_id, sa.date DESC';
+
+        const [attendance] = await pool.query(attendanceQuery, queryParams);
+
+        const attendanceMap = new Map();
+        attendance.forEach(record => {
+            if (!attendanceMap.has(record.student_id)) {
+                attendanceMap.set(record.student_id, []);
+            }
+            attendanceMap.get(record.student_id).push(record);
+        });
+
+        const data = children.map(child => ({
+            student_id: child.id,
+            student_name: `${child.first_name} ${child.last_name}`,
+            class_name: child.class_name,
+            attendance: attendanceMap.get(child.id) || []
+        }));
+
+        res.json({ success: true, data });
+    } catch (error) {
+        console.error('Error fetching children attendance:', error);
+        res.status(500).json({ success: false, message: 'Server error' });
+    }
+});
+
 // Geofenced staff clock-in/out via QR validation
 router.post('/staff/clock', auth, authorize(['Teacher', 'Admin', 'SuperAdmin', 'NonTeachingStaff']), async (req, res) => {
     const { action, qrCodeData, location } = req.body || {};
