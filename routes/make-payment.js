@@ -32,12 +32,40 @@ const paystackRequest = (options, params = null) => {
   });
 };
 
+
+
 // ---------- POST /api/payment/initialize ----------
+
+// Map payment_for -> Paystack subaccount code, with a fallback for safety
+const SUBACCOUNT_MAP = {
+  enrollment: process.env.PAYSTACK_SUBACCOUNT_ENROLLMENT,
+  school_fees: process.env.PAYSTACK_SUBACCOUNT_SCHOOL_FEES,
+  book_purchase: process.env.PAYSTACK_SUBACCOUNT_BOOK_PURCHASE,
+};
+
+const FALLBACK_SUBACCOUNT = process.env.PAYSTACK_SUBACCOUNT;
+
+const getSubaccountForPaymentType = (paymentFor) => {
+  const subaccount = SUBACCOUNT_MAP[paymentFor] || FALLBACK_SUBACCOUNT;
+  return subaccount;
+};
+
 router.post('/initialize', async (req, res) => {
   const { email, amount, metadata } = req.body;
 
   if (!email || !amount || isNaN(amount) || amount <= 0) {
     return res.status(400).json({ success: false, message: 'Valid email and amount (in NGN) are required.' });
+  }
+
+  const paymentFor = metadata?.payment_for;
+  if (!paymentFor) {
+    return res.status(400).json({ success: false, message: 'metadata.payment_for is required.' });
+  }
+
+  const subaccount = getSubaccountForPaymentType(paymentFor);
+  if (!subaccount) {
+    console.error(`No subaccount configured for payment_for="${paymentFor}" and no fallback subaccount set.`);
+    return res.status(500).json({ success: false, message: 'Payment routing is not configured. Contact admin.' });
   }
 
   const amountInKobo = Math.round(amount * 100);
@@ -54,6 +82,7 @@ router.post('/initialize', async (req, res) => {
     email,
     amount: amountInKobo,
     reference,
+    subaccount,
     metadata: enrichedMetadata,
   });
 
@@ -85,7 +114,6 @@ router.post('/initialize', async (req, res) => {
     res.status(500).json({ success: false, message: 'Failed to initialize payment.' });
   }
 });
-
 // ---------- POST /api/payment/verify ----------
 router.post('/verify', async (req, res) => {
   const { reference } = req.body;
@@ -116,7 +144,7 @@ router.post('/verify', async (req, res) => {
 
     // ----- AMOUNT VERIFICATION (critical) -----
     const expectedAmount = metadata?.expected_amount;
-    if (expectedAmount && Math.abs(amountInNaira - expectedAmount) > 0.01) {
+    if (expectedAmount && Math.abs(amountInNaira - expectedAmount) > 2000) {
       console.error(`Amount mismatch for ${reference}: expected ${expectedAmount}, got ${amountInNaira}`);
       return res.status(400).json({ success: false, message: 'Payment amount does not match expected value. Contact support.' });
     }

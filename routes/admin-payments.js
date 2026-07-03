@@ -353,20 +353,33 @@ router.delete('/:id', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, re
 
 // POST /api/admin/payments/manual - Manually record a payment with reference
 router.post('/manual', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, res) => {
-    const { student_id, term_id, amount_paid, reference, payment_date } = req.body;
+    let { student_id, term_id, amount_paid, reference, payment_date } = req.body;
 
+    // Basic presence checks
     if (!student_id || !term_id || !amount_paid) {
         return res.status(400).json({ success: false, message: 'Missing required fields: student_id, term_id, amount_paid.' });
     }
 
+    // Convert amount_paid to number and validate
+    const amountPaidNum = Number(amount_paid);
+    if (isNaN(amountPaidNum) || amountPaidNum <= 0) {
+        return res.status(400).json({ success: false, message: 'amount_paid must be a positive number.' });
+    }
+
+    // Validate payment_date if provided
+    if (payment_date && isNaN(Date.parse(payment_date))) {
+        return res.status(400).json({ success: false, message: 'Invalid payment_date format.' });
+    }
+
     try {
+        // Fetch student details
         const [student] = await pool.query('SELECT id, class_id, branch_id FROM students WHERE id = ?', [student_id]);
         if (student.length === 0) {
             return res.status(404).json({ success: false, message: 'Student not found.' });
         }
-
         const studentData = student[0];
 
+        // Admin branch restriction
         if (req.user.roles.includes('Admin')) {
             const adminBranchId = await getAdminBranchId(req.user.id);
             if (!adminBranchId || adminBranchId !== studentData.branch_id) {
@@ -374,11 +387,13 @@ router.post('/manual', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, r
             }
         }
 
+        // Check term existence
         const [term] = await pool.query('SELECT id FROM terms WHERE id = ?', [term_id]);
         if (term.length === 0) {
             return res.status(404).json({ success: false, message: 'Term not found.' });
         }
 
+        // Reference uniqueness
         if (reference) {
             const [existingRef] = await pool.query('SELECT id FROM payments WHERE reference = ?', [reference]);
             if (existingRef.length > 0) {
@@ -386,6 +401,41 @@ router.post('/manual', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, r
             }
         }
 
+        // --- Fee validation logic ---
+        // Get total due for this class and term
+        const [[{ total_due }]] = await pool.query(
+            'SELECT SUM(amount) as total_due FROM fees WHERE class_id = ? AND term_id = ?',
+            [studentData.class_id, term_id]
+        );
+        const effectiveTotalDue = total_due || 0;
+
+        // If no fees are configured for this term and class, prevent payment
+        if (effectiveTotalDue === 0) {
+            return res.status(400).json({ success: false, message: 'No fees defined for this student’s class and term.' });
+        }
+
+        // Get total already paid by this student for this term (excluding current payment)
+        const [[{ total_paid_before }]] = await pool.query(
+            'SELECT SUM(amount_paid) as total_paid_before FROM payments WHERE student_id = ? AND term_id = ?',
+            [student_id, term_id]
+        );
+        const existingPaid = total_paid_before || 0;
+
+        // Remaining due amount
+        const remainingDue = effectiveTotalDue - existingPaid;
+        if (remainingDue <= 0) {
+            return res.status(400).json({ success: false, message: 'This student has already paid the full amount for this term.' });
+        }
+
+        // Enforce exact payment amount
+        if (amountPaidNum !== remainingDue) {
+            return res.status(400).json({
+                success: false,
+                message: `Payment amount must exactly equal the remaining due amount of ${remainingDue}.`
+            });
+        }
+
+        // --- Payment recording (within transaction) ---
         const connection = await pool.getConnection();
         try {
             await connection.beginTransaction();
@@ -394,27 +444,17 @@ router.post('/manual', [auth, authorize(['Admin', 'SuperAdmin'])], async (req, r
                 id: uuidv4(),
                 student_id,
                 term_id,
-                amount_paid,
-                payment_date: payment_date || new Date(),
+                amount_paid: amountPaidNum,
+                payment_date: payment_date ? new Date(payment_date) : new Date(),
                 reference: reference || null,
             };
             await connection.query('INSERT INTO payments SET ?', newPayment);
 
-            const [[{ total_due }]] = await connection.query(
-                'SELECT SUM(amount) as total_due FROM fees WHERE class_id = ? AND term_id = ?',
-                [studentData.class_id, term_id]
-            );
-
-            const [[{ total_paid }]] = await connection.query(
-                'SELECT SUM(amount_paid) as total_paid FROM payments WHERE student_id = ? AND term_id = ?',
-                [student_id, term_id]
-            );
-
-            const newStatus = total_paid >= total_due ? 'Paid' : 'Not Paid';
-
+            // After inserting, total_paid becomes existingPaid + amountPaidNum = effectiveTotalDue
+            // So the status becomes 'Paid'
             await connection.query(
                 'INSERT INTO student_payment_statuses (student_id, term_id, status) VALUES (?, ?, ?) ON DUPLICATE KEY UPDATE status = ?',
-                [student_id, term_id, newStatus, newStatus]
+                [student_id, term_id, 'Paid', 'Paid']
             );
 
             await connection.commit();
