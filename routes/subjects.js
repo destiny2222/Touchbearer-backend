@@ -111,7 +111,7 @@ router.get('/class/:class_id', auth, async (req, res) => {
 
     try {
         const [subjects] = await pool.query(`
-            SELECT cs.*, c.name as class_name, s.name as teacher_name, s.email as teacher_email
+            SELECT cs.*, c.name as class_name, c.arm as class_arm, s.name as teacher_name, s.email as teacher_email
             FROM class_subjects cs
             LEFT JOIN classes c ON cs.class_id = c.id
             LEFT JOIN staff s ON cs.teacher_id = s.id
