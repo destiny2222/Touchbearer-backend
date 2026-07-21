@@ -835,10 +835,10 @@ router.get(
         const rank = sortedScores.indexOf(studentTotal) + 1;
 
         let grade = "F";
-        if (studentTotal >= 75) grade = "A";
-        else if (studentTotal >= 65) grade = "B";
-        else if (studentTotal >= 50) grade = "C";
-        else if (studentTotal >= 45) grade = "D";
+        if (studentTotal >= 80) grade = "A";
+        else if (studentTotal >= 70) grade = "B";
+        else if (studentTotal >= 60) grade = "C";
+        else if (studentTotal >= 50) grade = "D";
         else if (studentTotal >= 40) grade = "E";
 
         const prevTermCumulative = newCumulativeResultsBySubject[subject.id]?.total || 0;
@@ -2342,10 +2342,10 @@ router.get(
         const rank = sortedScores.indexOf(studentTotal) + 1;
 
         let grade = "F";
-        if (studentTotal >= 75) grade = "A";
-        else if (studentTotal >= 65) grade = "B";
-        else if (studentTotal >= 50) grade = "C";
-        else if (studentTotal >= 45) grade = "D";
+        if (studentTotal >= 80) grade = "A";
+        else if (studentTotal >= 70) grade = "B";
+        else if (studentTotal >= 60) grade = "C";
+        else if (studentTotal >= 50) grade = "D";
         else if (studentTotal >= 40) grade = "E";
 
         const prevTermCumulative = newCumulativeResultsBySubject[subject.id]?.total || 0;

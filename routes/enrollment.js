@@ -59,7 +59,7 @@ router.post('/register', async (req, res) => {
     } = req.body;
 
     // Basic validation
-    if (!first_name || !last_name || !dob || !passport || !parent_name || !parent_phone || !parent_email || !class_id) {
+    if (!first_name || !last_name || !dob || !parent_name || !parent_phone || !parent_email || !class_id) {
         return res.status(400).json({ success: false, message: 'Please fill all required fields.' });
     }
 
