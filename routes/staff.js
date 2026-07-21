@@ -498,6 +498,7 @@ router.put(
         image,
         teacher_permissions,
         admin_permissions,
+        password,
       } = req.body;
 
       const [existingStaff] = await connection.query(
@@ -596,6 +597,21 @@ router.put(
       if (email && email !== currentStaff.email) {
         await connection.query("UPDATE users SET email = ? WHERE id = ?", [
           email,
+          currentStaff.user_id,
+        ]);
+      }
+
+      if (password) {
+        if (typeof password !== "string" || password.length < 6) {
+          await connection.rollback();
+          return res.status(400).json({
+            success: false,
+            message: "Password must be at least 6 characters",
+          });
+        }
+        const hashedPassword = await bcrypt.hash(password, 10);
+        await connection.query("UPDATE users SET password = ? WHERE id = ?", [
+          hashedPassword,
           currentStaff.user_id,
         ]);
       }
