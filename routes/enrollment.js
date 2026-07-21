@@ -53,13 +53,12 @@ function generatePassword() {
 router.post('/register', async (req, res) => {
     const {
         first_name, last_name, dob, passport, address, nationality,
-        state, class_id, branch_id, previous_school, religion,
+        state, branch_id, previous_school, religion,
         disability, parent_name, parent_phone, parent_email, payment_status,
         program_type
     } = req.body;
 
-    // Basic validation
-    if (!first_name || !last_name || !dob || !parent_name || !parent_phone || !parent_email || !class_id) {
+    if (!first_name || !last_name || !dob || !parent_name || !parent_phone || !parent_email || !branch_id) {
         return res.status(400).json({ success: false, message: 'Please fill all required fields.' });
     }
 
@@ -119,7 +118,7 @@ router.post('/register', async (req, res) => {
         const newStudentData = {
             id: uuidv4(),
             user_id: studentUserId,
-            student_id: studentId, // Storing the generated ID
+            student_id: studentId,
             parent_id: parentId,
             first_name,
             last_name,
@@ -128,7 +127,6 @@ router.post('/register', async (req, res) => {
             address,
             nationality,
             state,
-            class_id,
             branch_id,
             previous_school: previous_school || null,
             religion,
@@ -224,7 +222,7 @@ router.post('/students/:id/reset-password', [auth, authorize(['Admin', 'SuperAdm
             const [adminStaff] = await connection.query('SELECT branch_id FROM staff WHERE user_id = ?', [req.user.id]);
             if (adminStaff.length === 0 || adminStaff[0].branch_id !== student.branch_id) {
                 await connection.rollback();
-                return res.status(403).json({ success: false, message: 'You are not authorized to reset this student\'s password.' });
+                return res.status(403).json({ success: false, message: 'You are not authorized to update this student.' });
             }
         }
 
@@ -318,7 +316,7 @@ router.put('/students/:id', [auth, authorize(['Admin', 'SuperAdmin'])], async (r
     const { id } = req.params;
     const {
         first_name, last_name, dob, passport, address, nationality,
-        state, class_id, branch_id, previous_school, religion,
+        state, branch_id, previous_school, religion,
         disability, parent_name, parent_phone, parent_email, payment_status
     } = req.body;
 
@@ -338,10 +336,6 @@ router.put('/students/:id', [auth, authorize(['Admin', 'SuperAdmin'])], async (r
             if (adminStaff.length === 0 || adminStaff[0].branch_id !== student.branch_id) {
                 await connection.rollback();
                 return res.status(403).json({ success: false, message: 'You are not authorized to update this student.' });
-            }
-            if (branch_id && branch_id !== student.branch_id) {
-                await connection.rollback();
-                return res.status(403).json({ success: false, message: 'Admins cannot change a student\'s branch.' });
             }
         }
 
@@ -378,7 +372,6 @@ router.put('/students/:id', [auth, authorize(['Admin', 'SuperAdmin'])], async (r
         if (address) updateStudentFields.address = address;
         if (nationality) updateStudentFields.nationality = nationality;
         if (state) updateStudentFields.state = state;
-        if (class_id) updateStudentFields.class_id = class_id;
         if (branch_id) updateStudentFields.branch_id = branch_id;
         if (previous_school) updateStudentFields.previous_school = previous_school;
         if (religion) updateStudentFields.religion = religion;

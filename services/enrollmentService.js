@@ -34,7 +34,7 @@ async function createNewStudentFromEnrollment(formData) {
     try {
         await connection.beginTransaction();
 
-        // Step 1: Find or Create Parent
+        // Step 1: Find or Create Parent (email is the single source of truth)
         let [parent] = await connection.query('SELECT * FROM parents WHERE email = ?', [formData.parent_email]);
         let parent_id;
         let parentUserId;
@@ -43,6 +43,7 @@ async function createNewStudentFromEnrollment(formData) {
             parent_id = parent[0].id;
             parentUserId = parent[0].user_id;
         } else {
+            // Email doesn't exist - create new parent
             const [existingUser] = await connection.query('SELECT id FROM users WHERE email = ?', [formData.parent_email]);
             
             if (existingUser.length > 0) {
@@ -55,7 +56,8 @@ async function createNewStudentFromEnrollment(formData) {
                 }
             } else {
                 parentUserId = uuidv4();
-                const tempParentPassword = formData.father_phone || formData.mother_phone || generatePassword();
+                const parentPhone = formData.father_phone || formData.mother_phone || null;
+                const tempParentPassword = parentPhone || generatePassword();
                 const hashedParentPassword = await bcrypt.hash(tempParentPassword, 10);
                 await connection.query('INSERT INTO users (id, email, password) VALUES (?, ?, ?)', [parentUserId, formData.parent_email, hashedParentPassword]);
 
@@ -64,22 +66,42 @@ async function createNewStudentFromEnrollment(formData) {
             }
 
             parent_id = uuidv4();
-            await connection.query('INSERT INTO parents (id, user_id, name, phone, email, dob, residential_address, occupation, workplace_address) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [
-                parent_id,
-                parentUserId,
-                formData.father_name || formData.mother_name || `${formData.first_name} ${formData.last_name}'s Parent`,
-                formData.father_phone || formData.mother_phone || null,
-                formData.parent_email,
-                formData.father_dob || formData.mother_dob || null,
-                formData.parent_residential_address || null,
-                formData.father_occupation || null,
-                formData.father_workplace_address || null
-            ]);
+            const parentPhone = formData.father_phone || formData.mother_phone || null;
+            try {
+                await connection.query('INSERT INTO parents (id, user_id, name, phone, email, dob, residential_address, occupation, workplace_address) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [
+                    parent_id,
+                    parentUserId,
+                    formData.father_name || formData.mother_name || 'Parent',
+                    parentPhone,
+                    formData.parent_email,
+                    formData.father_dob || formData.mother_dob,
+                    formData.parent_residential_address,
+                    formData.father_occupation,
+                    formData.father_workplace_address
+                ]);
+            } catch (phoneError) {
+                if (phoneError.code === 'ER_DUP_ENTRY' && phoneError.message.includes('phone')) {
+                    // Phone already exists for another parent - skip phone but continue
+                    await connection.query('INSERT INTO parents (id, user_id, name, email, dob, residential_address, occupation, workplace_address) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [
+                        parent_id,
+                        parentUserId,
+                        formData.father_name || formData.mother_name || 'Parent',
+                        formData.parent_email,
+                        formData.father_dob || formData.mother_dob,
+                        formData.parent_residential_address,
+                        formData.father_occupation,
+                        formData.father_workplace_address
+                    ]);
+                } else {
+                    throw phoneError;
+                }
+            }
         }
 
         // Step 2: Create User for New Student
         const student_id = await generateStudentId();
-        const temporary_password = formData.father_phone || formData.mother_phone || generatePassword();
+        const sharedPhone = formData.father_phone || formData.mother_phone || null;
+        const temporary_password = sharedPhone || generatePassword();
         const hashedStudentPassword = await bcrypt.hash(temporary_password, 10);
         const studentUserId = uuidv4();
         await connection.query('INSERT INTO users (id, email, password) VALUES (?, ?, ?)', [studentUserId, student_id, hashedStudentPassword]);
@@ -105,7 +127,6 @@ async function createNewStudentFromEnrollment(formData) {
             state: formData.state,
             tribe: formData.tribe || null,
             lga: formData.lga || null,
-            class_id: formData.class_id,
             branch_id: formData.branch_id,
             previous_school: formData.previous_school || null,
             previous_class: formData.previous_class || null,
@@ -154,7 +175,7 @@ async function createNewStudentFromEnrollment(formData) {
             data: {
                 student_id,
                 temporary_password,
-                full_name: `${formData.first_name} ${formData.last_name}`,
+                full_name: `${formData.other_names} ${formData.surname_name}`,
             }
         };
 

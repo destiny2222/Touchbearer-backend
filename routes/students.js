@@ -672,6 +672,7 @@ router.get(
 );
 
 // GET /api/students/new - list new students (duplicate of enrollment listing for convenience)
+// GET /api/students/new - list new students
 router.get(
   "/new/all",
   [auth, authorize(["Admin", "SuperAdmin"])],
@@ -679,25 +680,53 @@ router.get(
     try {
       let query = `
             SELECT 
-                ns.id, ns.student_id, ns.first_name, ns.last_name, ns.dob, ns.address, ns.nationality, ns.state, ns.religion, ns.disability, ns.passport, c.name as class_applying,
-                ns.payment_status, b.school_name as branch_name, b.address AS branch_address, p.name as parent_name, p.phone as parent_phone
+                ns.id,
+                ns.student_id,
+                ns.first_name,
+                ns.last_name,
+                ns.dob,
+                ns.address,
+                ns.nationality,
+                ns.state,
+                ns.religion,
+                ns.disability,
+                ns.passport,
+                ns.payment_status,
+                b.school_name AS branch_name,
+                b.address AS branch_address,
+                p.name AS parent_name,
+                p.phone AS parent_phone
             FROM new_students ns
             JOIN branches b ON ns.branch_id = b.id
             JOIN parents p ON ns.parent_id = p.id
-            JOIN classes c ON ns.class_id = c.id
         `;
+
       const params = [];
+
       if (req.user.roles.includes("Admin")) {
         const adminBranchId = await getAdminBranchId(req.user.id);
-        if (!adminBranchId) return res.json({ success: true, data: [] });
+
+        if (!adminBranchId) {
+          return res.json({ success: true, data: [] });
+        }
+
         query += " WHERE ns.branch_id = ?";
         params.push(adminBranchId);
       }
+
       query += " ORDER BY ns.created_at DESC";
+
+
       const [rows] = await pool.query(query, params);
-      return res.json({ success: true, data: rows });
+
+      return res.json({
+        success: true,
+        data: rows,
+      });
+
     } catch (err) {
       console.error("List new students error:", err);
+
       return res.status(500).json({
         success: false,
         message: "Server error while fetching new students.",
@@ -712,6 +741,12 @@ router.post(
   [auth, authorize(["Admin", "SuperAdmin"])],
   async (req, res) => {
     const { newStudentId } = req.params;
+    const { class_id } = req.body;
+
+    if (!class_id) {
+        return res.status(400).json({ success: false, message: "class_id is required to migrate a student." });
+    }
+
     const connection = await pool.getConnection();
     try {
       await connection.beginTransaction();
@@ -739,7 +774,19 @@ router.post(
         }
       }
 
-      // Generate new student ID using same format as direct creation
+      const [classRows] = await connection.query(
+          "SELECT id, branch_id FROM classes WHERE id = ?",
+          [class_id]
+      );
+      if (classRows.length === 0) {
+          await connection.rollback();
+          return res.status(404).json({ success: false, message: "Class not found." });
+      }
+      if (classRows[0].branch_id !== ns.branch_id) {
+          await connection.rollback();
+          return res.status(400).json({ success: false, message: "Class does not belong to the student's branch." });
+      }
+
       const generatedStudentId = await generateStudentId(ns.branch_id);
 
       // Fetch the user's account by student_id (stored as users.email)
@@ -783,7 +830,6 @@ router.post(
         [userId, studentRole[0].id]
       );
 
-      // Fetch parent info before committing for notification
       const [parentRows] = await connection.query(
         "SELECT p.email as parent_email, p.phone as parent_phone, p.name as parent_name FROM parents p WHERE p.id = ?",
         [ns.parent_id]
@@ -792,13 +838,13 @@ router.post(
         "SELECT site_name FROM branches WHERE id = ?",
         [ns.branch_id]
       );
-      const [classRows] = await connection.query(
+      const [migratingClassRows] = await connection.query(
         "SELECT name FROM classes WHERE id = ?",
-        [ns.class_id]
+        [class_id]
       );
       const parentInfo = parentRows[0] || {};
       const branchName = branchRows[0]?.site_name;
-      const className = classRows[0]?.name;
+      const className = migratingClassRows[0]?.name;
 
       // Create student row
       const studentData = {
@@ -812,7 +858,7 @@ router.post(
         address: ns.address,
         nationality: ns.nationality,
         state: ns.state,
-        class_id: ns.class_id,
+        class_id: class_id,
         branch_id: ns.branch_id,
         religion: ns.religion,
         disability: ns.disability,

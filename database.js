@@ -195,7 +195,7 @@ async function initializeDatabase() {
                 state VARCHAR(255) NOT NULL,
                 tribe VARCHAR(255),
                 lga VARCHAR(255),
-                class_id VARCHAR(36) NOT NULL,
+                class_id VARCHAR(36),
                 branch_id VARCHAR(36) NOT NULL,
                 previous_school VARCHAR(255),
                 previous_class VARCHAR(255),
@@ -236,8 +236,7 @@ async function initializeDatabase() {
                 payment_status VARCHAR(255) NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (parent_id) REFERENCES parents(id) ON DELETE CASCADE,
-                FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE,
-                FOREIGN KEY (class_id) REFERENCES classes(id) ON DELETE CASCADE
+                FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE
             )
         `;
 
@@ -1054,6 +1053,16 @@ async function initializeDatabase() {
 
     await connection.query(createNewStudentTable);
     console.log("New Students table created");
+
+    // Fix class_id to be nullable and remove FK constraint in existing new_students table
+    try {
+      await connection.query(`ALTER TABLE new_students MODIFY COLUMN class_id VARCHAR(36)`);
+      console.log("Made 'class_id' nullable in new_students table");
+    } catch (error) {
+      if (error.code !== "ER_BAD_FIELD_ERROR") {
+        console.log("Error making class_id nullable in new_students:", error.message);
+      }
+    }
 
     // Add missing columns to existing new_students table
     try {
