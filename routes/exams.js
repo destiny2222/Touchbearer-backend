@@ -4,6 +4,7 @@ const { pool } = require("../database");
 const { v4: uuidv4 } = require("uuid");
 const auth = require("../middleware/auth");
 const authorize = require("../middleware/authorize");
+const examAssignmentService = require("../services/examAssignmentService");
 
 function getOrdinal(n) {
   const s = ["th", "st", "nd", "rd"];
@@ -1041,7 +1042,7 @@ router.get("/upcoming", async (req, res) => {
 });
 
 // @route   GET /api/exams/me/upcoming
-// @desc    Get all exams that the student has NOT yet submitted (no time filters)
+// @desc    Get all exams that the student has NOT yet submitted (class-based + direct assignments)
 // @access  Student, NewStudent, Parent, Teacher
 router.get(
   "/me/upcoming",
@@ -1052,18 +1053,28 @@ router.get(
     const connection = await pool.getConnection();
 
     try {
+      let allExams = [];
+      let branchId = null;
+
       let studentClassId = null;
       let examTypeFilter = null;
+      let studentIdParam = null;
 
       // Determine student's class and exam type based on role
       if (roles.includes("Student")) {
         const [students] = await connection.query(
-          "SELECT class_id FROM students WHERE user_id = ?",
+          "SELECT class_id, branch_id FROM students WHERE user_id = ?",
           [userId]
         );
         if (students.length > 0) {
           studentClassId = students[0].class_id;
+          branchId = students[0].branch_id;
           examTypeFilter = "Internal";
+          const [studentProfile] = await connection.query(
+            "SELECT id FROM students WHERE user_id = ?",
+            [userId]
+          );
+          studentIdParam = studentProfile.length ? studentProfile[0].id : null;
         }
       } else if (roles.includes("NewStudent")) {
         const [users] = await connection.query(
@@ -1072,73 +1083,110 @@ router.get(
         );
         if (users.length > 0) {
           const [newStudents] = await connection.query(
-            "SELECT class_id FROM new_students WHERE student_id = ?",
+            "SELECT class_id, branch_id FROM new_students WHERE student_id = ?",
             [users[0].email]
           );
           if (newStudents.length > 0) {
             studentClassId = newStudents[0].class_id;
+            branchId = newStudents[0].branch_id;
             examTypeFilter = "External";
+          }
+        }
+        studentIdParam = userId; // NewStudent uses user ID
+      }
+
+      // Get class-based exams (if student has a class)
+      if (studentClassId && examTypeFilter && studentIdParam) {
+        const classExamQuery = `
+          SELECT
+            e.id,
+            e.title,
+            e.duration_minutes,
+            DATE_FORMAT(e.exam_date_time, '%Y-%m-%d %H:%i:%s') AS date,
+            DATE_FORMAT(e.exam_end_datetime, '%Y-%m-%d %H:%i:%s') AS exam_end_datetime,
+            c.name AS class,
+            b.school_name AS branch,
+            'class-based' AS assignment_type,
+            (
+              SELECT GROUP_CONCAT(DISTINCT cs.name SEPARATOR ', ')
+              FROM questions q
+              JOIN class_subjects cs ON q.class_subject_id = cs.id
+              WHERE q.exam_id = e.id
+            ) AS subjects
+          FROM exams e
+          JOIN classes c ON e.class_id = c.id
+          JOIN branches b ON e.branch_id = b.id
+          LEFT JOIN exam_results er
+            ON e.id = er.exam_id
+            AND er.student_id = ?
+            AND er.submitted_at IS NOT NULL
+          WHERE e.class_id = ?
+            AND e.exam_type = ?
+            AND er.id IS NULL
+        `;
+
+        const [classExams] = await connection.query(classExamQuery, [studentIdParam, studentClassId, examTypeFilter]);
+        allExams = allExams.concat(classExams);
+      }
+
+      // Get directly assigned exams (for all students, especially those without a class)
+      // Note: student_exam_assignments.student_id stores user_id (auth user ID), not internal student profile ID
+      if (userId && branchId) {
+        try {
+          const directExamQuery = `
+            SELECT
+              e.id,
+              e.title,
+              e.duration_minutes,
+              DATE_FORMAT(e.exam_date_time, '%Y-%m-%d %H:%i:%s') AS date,
+              DATE_FORMAT(e.exam_end_datetime, '%Y-%m-%d %H:%i:%s') AS exam_end_datetime,
+              NULL AS class,
+              b.school_name AS branch,
+              'direct-assignment' AS assignment_type,
+              (
+                SELECT GROUP_CONCAT(DISTINCT cs.name SEPARATOR ', ')
+                FROM questions q
+                JOIN class_subjects cs ON q.class_subject_id = cs.id
+                WHERE q.exam_id = e.id
+              ) AS subjects
+            FROM student_exam_assignments sea
+            JOIN exams e ON sea.exam_id = e.id
+            JOIN branches b ON sea.branch_id = b.id
+            LEFT JOIN exam_results er
+              ON e.id = er.exam_id
+              AND er.student_id = ?
+              AND er.submitted_at IS NOT NULL
+            WHERE sea.student_id = ?
+              AND sea.branch_id = ?
+              AND er.id IS NULL
+          `;
+
+          const [directExams] = await connection.query(directExamQuery, [userId, userId, branchId]);
+          allExams = allExams.concat(directExams);
+        } catch (directExamError) {
+          // Table might not exist yet - log and continue with class-based exams only
+          if (directExamError.code === 'ER_NO_SUCH_TABLE') {
+            console.log('Note: student_exam_assignments table not yet created. Returning class-based exams only.');
+          } else {
+            console.error('Error fetching direct assignments:', directExamError.message);
           }
         }
       }
 
-      if (!studentClassId || !examTypeFilter) {
-        return res.json({ success: true, data: [] });
-      }
+      // Remove duplicates and sort by date
+      const uniqueExams = {};
+      allExams.forEach((exam) => {
+        if (!uniqueExams[exam.id]) {
+          uniqueExams[exam.id] = exam;
+        }
+      });
 
-      // Simple query: all exams for the class, of correct type, without a submitted result
-      const query = `
-        SELECT 
-          e.id,
-          e.title,
-          e.duration_minutes,
-          DATE_FORMAT(e.exam_date_time, '%Y-%m-%d %H:%i:%s') AS date,
-          DATE_FORMAT(e.exam_end_datetime, '%Y-%m-%d %H:%i:%s') AS exam_end_datetime,
-          c.name AS class,
-          b.school_name AS branch,
-          (
-            SELECT GROUP_CONCAT(DISTINCT cs.name SEPARATOR ', ')
-            FROM questions q 
-            JOIN class_subjects cs ON q.class_subject_id = cs.id 
-            WHERE q.exam_id = e.id
-          ) AS subjects
-        FROM exams e
-        JOIN classes c ON e.class_id = c.id
-        JOIN branches b ON e.branch_id = b.id
-        LEFT JOIN exam_results er 
-          ON e.id = er.exam_id 
-          AND er.student_id = ? 
-          AND er.submitted_at IS NOT NULL
-        WHERE e.class_id = ?
-          AND e.exam_type = ?
-          AND er.id IS NULL   -- only exams without a submitted result
-        ORDER BY e.exam_date_time ASC
-      `;
-
-      // For student_id param: for Student role we need students.id? Wait, exam_results.student_id
-      // For Student role, exam_results.student_id = students.id (profile ID)
-      // For NewStudent role, exam_results.student_id = users.id (auth ID)
-      let studentIdParam;
-      if (roles.includes("Student")) {
-        const [students] = await connection.query(
-          "SELECT id FROM students WHERE user_id = ?",
-          [userId]
-        );
-        studentIdParam = students.length ? students[0].id : null;
-      } else {
-        studentIdParam = userId; // NewStudent uses user ID
-      }
-
-      if (!studentIdParam) {
-        return res.json({ success: true, data: [] });
-      }
-
-      const [exams] = await connection.query(query, [studentIdParam, studentClassId, examTypeFilter]);
-
-      const upcomingExams = exams.map((exam) => ({
-        ...exam,
-        subjects: exam.subjects ? exam.subjects.split(", ") : [],
-      }));
+      const upcomingExams = Object.values(uniqueExams)
+        .sort((a, b) => new Date(a.date) - new Date(b.date))
+        .map((exam) => ({
+          ...exam,
+          subjects: exam.subjects ? exam.subjects.split(", ") : [],
+        }));
 
       res.json({ success: true, data: upcomingExams });
     } catch (err) {
@@ -1154,6 +1202,9 @@ router.get(
 // @route   GET /api/exams/student/current-exam
 // @desc    Get the currently active exam for the student (resumes if already started)
 // @access  Student, NewStudent
+// @route   GET /api/exams/student/current-exam
+// @desc    Get the currently active exam for the student (resumes if already started)
+// @access  Student, NewStudent
 router.get(
   "/student/current-exam",
   [auth, authorize(["Student", "NewStudent"])],
@@ -1164,58 +1215,116 @@ router.get(
       const { roles } = req.user;
       const userId = req.user.id;
 
+      console.log(`[Current Exam] Student ID: ${userId}, Roles: ${roles}`);
+
       if (roles.includes("NewStudent")) {
+        console.log(`[Current Exam] Checking NewStudent with user_id: ${userId}`);
         const [newStudent] = await connection.query(
           "SELECT class_id FROM new_students WHERE student_id = (SELECT email FROM users WHERE id = ?)",
           [userId]
         );
+        console.log(`[Current Exam] NewStudent query result:`, newStudent);
         if (newStudent.length) {
           studentClassId = newStudent[0].class_id;
           examTypeFilter = "External";
           dbStudentId = userId;
+          console.log(`[Current Exam] NewStudent found - class_id: ${studentClassId}, dbStudentId: ${dbStudentId}`);
+        } else {
+          console.log(`[Current Exam] No NewStudent record found for user_id: ${userId}`);
         }
       } else if (roles.includes("Student")) {
+        console.log(`[Current Exam] Checking Student with user_id: ${userId}`);
         const [existingStudent] = await connection.query(
           "SELECT id, class_id FROM students WHERE user_id = ?",
           [userId]
         );
+        console.log(`[Current Exam] Student query result:`, existingStudent);
         if (existingStudent.length) {
           studentClassId = existingStudent[0].class_id;
           examTypeFilter = "Internal";
           dbStudentId = existingStudent[0].id;
+          console.log(`[Current Exam] Student found - id: ${dbStudentId}, class_id: ${studentClassId}`);
+        } else {
+          console.log(`[Current Exam] No Student record found for user_id: ${userId}`);
         }
       }
 
-      if (!studentClassId || !dbStudentId) {
-        return res.status(404).json({ success: false, message: "Student class not found." });
+      if (!dbStudentId) {
+        console.log(`[Current Exam] Missing student ID - dbStudentId: ${dbStudentId}`);
+        return res.status(404).json({ success: false, message: "Student not found." });
       }
 
       const endWindow = examTypeFilter === "Internal"
         ? "COALESCE(exam_end_datetime, exam_date_time + INTERVAL 1 DAY)"
         : "COALESCE(exam_end_datetime, exam_date_time + INTERVAL duration_minutes MINUTE)";
 
-      const [exams] = await connection.query(
-        `SELECT id, title, duration_minutes, exam_date_time, exam_end_datetime, exam_type
-         FROM exams
-         WHERE class_id = ? AND exam_type = ?
-           AND NOW() >= exam_date_time - INTERVAL 30 MINUTE
-           AND NOW() <= ${endWindow}
-         ORDER BY exam_date_time ASC
-         LIMIT 1`,
-        [studentClassId, examTypeFilter]
-      );
+      console.log(`[Current Exam] Looking for exam - class_id: ${studentClassId}, exam_type: ${examTypeFilter}, dbStudentId: ${dbStudentId}`);
+      console.log(`[Current Exam] End window calculation: ${endWindow}`);
+
+      let exams = [];
+
+      // First, check for class-based exams (if student has a class)
+      if (studentClassId) {
+        const [classBasedExams] = await connection.query(
+          `SELECT id, title, duration_minutes, exam_date_time, exam_end_datetime, exam_type
+           FROM exams
+           WHERE class_id = ? AND exam_type = ?
+             AND NOW() >= exam_date_time - INTERVAL 30 MINUTE
+             AND NOW() <= ${endWindow}
+           ORDER BY exam_date_time ASC
+           LIMIT 1`,
+          [studentClassId, examTypeFilter]
+        );
+        exams = classBasedExams;
+      }
+
+      // If no class-based exam found, check for directly assigned exams
+      if (exams.length === 0) {
+        console.log(`[Current Exam] No class-based exam found, checking direct assignments for user_id: ${userId}`);
+        const [directExams] = await connection.query(
+          `SELECT e.id, e.title, e.duration_minutes, e.exam_date_time, e.exam_end_datetime, e.exam_type
+           FROM student_exam_assignments sea
+           JOIN exams e ON sea.exam_id = e.id
+           WHERE sea.student_id = ?
+             AND NOW() >= e.exam_date_time - INTERVAL 30 MINUTE
+             AND NOW() <= ${endWindow}
+           ORDER BY e.exam_date_time ASC
+           LIMIT 1`,
+          [userId]
+        );
+        exams = directExams;
+      }
+
+      console.log(`[Current Exam] Exam query result:`, exams);
 
       if (exams.length === 0) {
+        console.log(`[Current Exam] No current exam available for class_id: ${studentClassId}, exam_type: ${examTypeFilter}`);
         return res.status(404).json({ success: false, message: "No current exam available." });
       }
 
       const currentExam = exams[0];
       const examId = currentExam.id;
+      console.log(`[Current Exam] Found exam - id: ${examId}, title: ${currentExam.title}, duration: ${currentExam.duration_minutes} minutes`);
 
+      // Check for existing exam results
+      console.log(`[Current Exam] Checking exam_results for exam_id: ${examId}, student_id: ${dbStudentId}`);
       let [existingResult] = await connection.query(
         "SELECT id, started_at, submitted_at, answers FROM exam_results WHERE exam_id = ? AND student_id = ?",
         [examId, dbStudentId]
       );
+
+      console.log(`[Current Exam] Existing results count: ${existingResult.length}`);
+      if (existingResult.length > 0) {
+        console.log(`[Current Exam] Existing result details:`, {
+          id: existingResult[0].id,
+          started_at: existingResult[0].started_at,
+          submitted_at: existingResult[0].submitted_at,
+          has_answers: !!existingResult[0].answers,
+          answers_preview: existingResult[0].answers ? existingResult[0].answers.substring(0, 100) : null
+        });
+      } else {
+        console.log(`[Current Exam] No existing exam_results found for exam_id: ${examId}, student_id: ${dbStudentId}`);
+      }
 
       let startedAt = null;
       let remainingTime = currentExam.duration_minutes;
@@ -1223,26 +1332,44 @@ router.get(
       const GRACE_MINUTES = 0;
 
       if (existingResult.length > 0) {
+        // Check if exam is already submitted
         if (existingResult[0].submitted_at) {
-          return res.status(403).json({ success: false, message: "Exam already submitted." });
+          console.log(`[Current Exam] ❌ Exam already submitted at: ${existingResult[0].submitted_at}`);
+          console.log(`[Current Exam] Student attempted to access submitted exam - exam_id: ${examId}, student_id: ${dbStudentId}`);
+          return res.status(403).json({ 
+            success: false, 
+            message: "Exam already submitted.",
+            debug: {
+              submitted_at: existingResult[0].submitted_at,
+              exam_id: examId,
+              student_id: dbStudentId
+            }
+          });
         }
+
+        console.log(`[Current Exam] Exam not submitted, checking if started`);
         startedAt = existingResult[0].started_at;
 
         if (startedAt) {
+          console.log(`[Current Exam] Exam started at: ${startedAt}`);
           const startTime = new Date(startedAt);
           const now = new Date();
           let timeSpent = Math.floor((now - startTime) / 60000);
           remainingTime = Math.max(0, currentExam.duration_minutes - timeSpent);
+          console.log(`[Current Exam] Time spent: ${timeSpent} minutes, Remaining time: ${remainingTime} minutes`);
 
           if (currentExam.exam_end_datetime) {
             const examEnd = new Date(currentExam.exam_end_datetime);
             const hardDeadline = Math.floor((examEnd - now) / 60000);
             remainingTime = Math.min(remainingTime, Math.max(0, hardDeadline + GRACE_MINUTES));
+            console.log(`[Current Exam] Hard deadline check - exam_end: ${currentExam.exam_end_datetime}, hardDeadline: ${hardDeadline} minutes, Remaining after deadline: ${remainingTime} minutes`);
           } else {
             remainingTime = Math.max(0, remainingTime + GRACE_MINUTES);
+            console.log(`[Current Exam] No exam_end_datetime, remaining time with grace: ${remainingTime} minutes`);
           }
 
           if (remainingTime <= 0) {
+            console.log(`[Current Exam] ❌ Exam time expired - remainingTime: ${remainingTime} minutes`);
             return res.status(403).json({ success: false, message: "Your exam time has expired." });
           }
 
@@ -1250,26 +1377,38 @@ router.get(
             try {
               const answersArray = JSON.parse(existingResult[0].answers);
               answersArray.forEach(a => { savedAnswers[a.questionId] = a.selectedOptionIndex; });
-            } catch (e) {}
+              console.log(`[Current Exam] Loaded ${answersArray.length} saved answers from previous session`);
+            } catch (e) {
+              console.log(`[Current Exam] Error parsing saved answers:`, e);
+            }
           }
         } else {
+          console.log(`[Current Exam] Exam result exists but started_at is null - updating started_at`);
           await connection.query("UPDATE exam_results SET started_at = NOW() WHERE id = ?", [existingResult[0].id]);
           startedAt = new Date();
+          console.log(`[Current Exam] started_at updated to: ${startedAt}`);
         }
       } else {
+        // No existing result - create one
+        console.log(`[Current Exam] No exam result found - creating new exam result`);
         const [questionCount] = await connection.query(
           "SELECT COUNT(*) as total FROM questions WHERE exam_id = ?",
           [examId]
         );
         const totalQuestions = questionCount[0]?.total || 0;
+        console.log(`[Current Exam] Total questions for exam: ${totalQuestions}`);
+        
         const resultId = uuidv4();
         await connection.query(
           `INSERT INTO exam_results (id, exam_id, student_id, score, total_questions, answered_questions, started_at, submitted_at) VALUES (?, ?, ?, 0, ?, 0, NOW(), NULL)`,
           [resultId, examId, dbStudentId, totalQuestions]
         );
         startedAt = new Date();
+        console.log(`[Current Exam] New exam result created - id: ${resultId}, started_at: ${startedAt}`);
       }
 
+      // Fetch questions
+      console.log(`[Current Exam] Fetching questions for exam_id: ${examId}`);
       const [questionsFromDb] = await connection.query(
         `SELECT q.id, q.question_text as text, q.question_image_url, q.options,
                 q.class_subject_id, cs.name as subject_name
@@ -1279,6 +1418,8 @@ router.get(
          ORDER BY cs.name`,
         [examId]
       );
+
+      console.log(`[Current Exam] Found ${questionsFromDb.length} questions`);
 
       const subjects = {};
       questionsFromDb.forEach((q) => {
@@ -1294,6 +1435,8 @@ router.get(
         });
       });
 
+      console.log(`[Current Exam] ✅ Successfully returning exam data with ${Object.keys(subjects).length} subjects`);
+      
       res.json({
         success: true,
         data: {
@@ -1841,7 +1984,11 @@ router.get(
         `;
 
       const [results] = await pool.query(query, [examId]);
-      res.json({ success: true, data: results });
+      res.json({
+        success: true,
+        data: results,
+        count: results.length
+      });
     } catch (err) {
       console.error("Error fetching exam results:", err);
       res.status(500).json({
@@ -2404,19 +2551,38 @@ router.put(
 
 // @route   GET /api/exams/results/me
 // @desc    Get the authenticated student's own published results for the current term
-// @access  Student
-router.get("/results/me", [auth, authorize(["Student"])], async (req, res) => {
+// @access  Student, NewStudent
+router.get("/results/me", [auth, authorize(["Student", "NewStudent"])], async (req, res) => {
   try {
-    const [student] = await pool.query(
-      "SELECT id, class_id, branch_id FROM students WHERE user_id = ?",
-      [req.user.id]
-    );
-    if (student.length === 0) {
-      return res
-        .status(404)
-        .json({ success: false, message: "Student not found." });
+    const userId = req.user.id;
+    const { roles } = req.user;
+    let branch_id, class_id;
+
+    // Get branch_id based on student type
+    if (roles.includes("Student")) {
+      const [student] = await pool.query(
+        "SELECT id, class_id, branch_id FROM students WHERE user_id = ?",
+        [userId]
+      );
+      if (student.length === 0) {
+        return res.status(404).json({ success: false, message: "Student not found." });
+      }
+      class_id = student[0].class_id;
+      branch_id = student[0].branch_id;
+    } else if (roles.includes("NewStudent")) {
+      // For new students, get branch_id from new_students table
+      const [newStudent] = await pool.query(
+        "SELECT branch_id FROM new_students WHERE user_id = ?",
+        [userId]
+      );
+      if (newStudent.length === 0) {
+        return res.status(404).json({ success: false, message: "Student not found." });
+      }
+      branch_id = newStudent[0].branch_id;
+      // New students may not have a class_id, so leave it null
+    } else {
+      return res.status(403).json({ success: false, message: "Unauthorized." });
     }
-    const { class_id, branch_id } = student[0];
 
     const [terms] = await pool.query(
       "SELECT id FROM terms WHERE branch_id = ? AND is_active = TRUE",
@@ -2431,7 +2597,7 @@ router.get("/results/me", [auth, authorize(["Student"])], async (req, res) => {
     const term_id = terms[0].id;
 
     const query = `
-            SELECT 
+            SELECT
                 er.id,
                 er.score,
                 er.exam_id,
@@ -2442,27 +2608,46 @@ router.get("/results/me", [auth, authorize(["Student"])], async (req, res) => {
             ORDER BY e.exam_date_time DESC
         `;
 
-    const [results] = await pool.query(query, [req.user.id, term_id]);
+    const [results] = await pool.query(query, [userId, term_id]);
 
     // Calculate position for each result
     const resultsWithPosition = await Promise.all(
       results.map(async (result) => {
-        const [classScores] = await pool.query(
-          `
-                SELECT score FROM exam_results 
-                WHERE exam_id = ? AND published = TRUE AND student_id IN 
+        let rank = 0;
+
+        if (class_id) {
+          // For class-based students, rank within their class
+          const [classScores] = await pool.query(
+            `
+                SELECT score FROM exam_results
+                WHERE exam_id = ? AND published = TRUE AND student_id IN
                 (SELECT user_id FROM students WHERE class_id = ?)
                 ORDER BY score DESC
             `,
-          [result.exam_id, class_id]
-        );
+            [result.exam_id, class_id]
+          );
 
-        const scores = classScores.map((s) => parseFloat(s.score));
-        const rank = scores.indexOf(parseFloat(result.score)) + 1;
+          const scores = classScores.map((s) => parseFloat(s.score));
+          rank = scores.indexOf(parseFloat(result.score)) + 1;
+        } else {
+          // For direct-assigned students, rank within their branch
+          const [branchScores] = await pool.query(
+            `
+                SELECT score FROM exam_results
+                WHERE exam_id = ? AND published = TRUE AND student_id IN
+                (SELECT user_id FROM new_students WHERE branch_id = ?)
+                ORDER BY score DESC
+            `,
+            [result.exam_id, branch_id]
+          );
+
+          const scores = branchScores.map((s) => parseFloat(s.score));
+          rank = scores.indexOf(parseFloat(result.score)) + 1;
+        }
 
         return {
           ...result,
-          position: getOrdinal(rank),
+          position: rank > 0 ? getOrdinal(rank) : "N/A",
         };
       })
     );
@@ -2473,6 +2658,179 @@ router.get("/results/me", [auth, authorize(["Student"])], async (req, res) => {
     res.status(500).json({
       success: false,
       message: "Server error while fetching exam results.",
+    });
+  }
+});
+
+// @route   POST /api/exams/assign
+// @desc    Assign an exam to a specific student (for external/new students)
+// @access  Teacher, Admin
+router.post("/assign", [auth, authorize(["Teacher", "Admin"])], async (req, res) => {
+  const { student_id, exam_id } = req.body;
+  const { id: userId } = req.user;
+
+  try {
+    if (!student_id || !exam_id) {
+      return res.status(400).json({
+        success: false,
+        message: "Missing required fields: student_id, exam_id",
+      });
+    }
+
+    const result = await examAssignmentService.assignExamToStudent(
+      student_id,
+      exam_id,
+      userId
+    );
+
+    if (!result.success && result.data?.assignmentId) {
+      // Exam already assigned
+      return res.status(400).json(result);
+    }
+
+    res.json(result);
+  } catch (err) {
+    console.error("Error assigning exam:", err);
+
+    // Handle specific error messages
+    if (err.message.includes("not assigned to any branch")) {
+      return res.status(403).json({
+        success: false,
+        message: err.message,
+      });
+    }
+
+    if (err.message.includes("not found")) {
+      return res.status(404).json({
+        success: false,
+        message: err.message,
+      });
+    }
+
+    res.status(500).json({
+      success: false,
+      message: "Server error while assigning exam",
+    });
+  }
+});
+
+// @route   POST /api/exams/bulk-assign
+// @desc    Assign an exam to multiple students or a whole class
+// @access  Teacher, Admin
+router.post("/bulk-assign", [auth, authorize(["Teacher", "Admin"])], async (req, res) => {
+  const { exam_id, student_ids } = req.body;
+  const { id: userId } = req.user;
+
+  try {
+    if (!exam_id || (!student_ids || student_ids.length === 0)) {
+      return res.status(400).json({
+        success: false,
+        message: "Missing required fields: exam_id, student_ids (array)",
+      });
+    }
+
+    const result = await examAssignmentService.bulkAssignExamToStudents(
+      exam_id,
+      student_ids,
+      userId
+    );
+
+    res.json(result);
+  } catch (err) {
+    console.error("Error in bulk assignment:", err);
+
+    // Handle specific error messages
+    if (err.message.includes("not assigned to any branch")) {
+      return res.status(403).json({
+        success: false,
+        message: err.message,
+      });
+    }
+
+    if (err.message.includes("not found")) {
+      return res.status(404).json({
+        success: false,
+        message: err.message,
+      });
+    }
+
+    res.status(500).json({
+      success: false,
+      message: "Server error while bulk assigning exams",
+    });
+  }
+});
+
+// @route   DELETE /api/exams/assignment/:assignmentId
+// @desc    Remove an exam assignment from a student
+// @access  Teacher, Admin
+router.delete("/assignment/:assignmentId", [auth, authorize(["Teacher", "Admin"])], async (req, res) => {
+  const { assignmentId } = req.params;
+
+  try {
+    const [result] = await pool.query(
+      "DELETE FROM student_exam_assignments WHERE id = ?",
+      [assignmentId]
+    );
+
+    if (result.affectedRows === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Assignment not found",
+      });
+    }
+
+    res.json({
+      success: true,
+      message: "Assignment removed successfully",
+    });
+  } catch (err) {
+    console.error("Error removing assignment:", err);
+    res.status(500).json({
+      success: false,
+      message: "Server error while removing assignment",
+    });
+  }
+});
+
+// @route   GET /api/exams/:examId/assignments
+// @desc    Get all students assigned to an exam
+// @access  Teacher, Admin
+router.get("/:examId/assignments", [auth, authorize(["Teacher", "Admin"])], async (req, res) => {
+  const { examId } = req.params;
+
+  try {
+    const query = `
+      SELECT
+        sea.id as assignment_id,
+        sea.student_id,
+        sea.assigned_at,
+        COALESCE(ns.first_name, COALESCE(s.first_name, u.email)) as first_name,
+        COALESCE(ns.last_name, COALESCE(s.last_name, '')) as last_name,
+        COALESCE(ns.student_id, s.id) as student_code,
+        CASE WHEN er.id IS NOT NULL THEN 1 ELSE 0 END AS has_submitted,
+        er.score,
+        er.submitted_at
+      FROM student_exam_assignments sea
+      LEFT JOIN users u ON sea.student_id = u.id
+      LEFT JOIN students s ON u.id = s.user_id
+      LEFT JOIN new_students ns ON u.id = ns.user_id
+      LEFT JOIN exam_results er ON sea.exam_id = er.exam_id AND sea.student_id = er.student_id
+      WHERE sea.exam_id = ?
+      ORDER BY sea.assigned_at DESC
+    `;
+
+    const [assignments] = await pool.query(query, [examId]);
+
+    res.json({
+      success: true,
+      data: assignments,
+    });
+  } catch (err) {
+    console.error("Error fetching assignments:", err);
+    res.status(500).json({
+      success: false,
+      message: "Server error while fetching assignments",
     });
   }
 });

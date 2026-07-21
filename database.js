@@ -766,6 +766,23 @@ async function initializeDatabase() {
             )
         `;
 
+const createStudentExamAssignmentsTable = `
+    CREATE TABLE IF NOT EXISTS student_exam_assignments (
+        id VARCHAR(36) PRIMARY KEY,
+        student_id VARCHAR(36) NOT NULL,
+        exam_id VARCHAR(36) NOT NULL,
+        branch_id VARCHAR(36) NOT NULL,
+        assigned_by VARCHAR(36) NOT NULL,
+        assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY unique_student_exam (student_id, exam_id),
+        KEY idx_student_id (student_id),
+        KEY idx_exam_id (exam_id),
+        KEY idx_branch_id (branch_id),
+       
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+`;
+
     // Create tables in the correct order
     await connection.query(createUsersTable);
     console.log("Users table created");
@@ -1537,6 +1554,8 @@ async function initializeDatabase() {
       console.log("Error updating exam_results table:", error.message);
     }
 
+    
+
     await connection.query(createTimetablesTable);
     console.log("Timetables table created");
     await connection.query(createAssignmentsTable);
@@ -1557,6 +1576,34 @@ async function initializeDatabase() {
     console.log("Staff attendance logs table created");
     await connection.query(createStudentAttendanceTable);
     console.log("Student attendance table created");
+    // Create student exam assignments table (after exams, users, branches are ready)
+    // Create the table without foreign keys
+try {
+    await connection.query("DROP TABLE IF EXISTS student_exam_assignments");
+    
+    const createSQL = `
+        CREATE TABLE IF NOT EXISTS student_exam_assignments (
+            id VARCHAR(36) PRIMARY KEY,
+            student_id VARCHAR(36) NOT NULL,
+            exam_id VARCHAR(36) NOT NULL,
+            branch_id VARCHAR(36) NOT NULL,
+            assigned_by VARCHAR(36) NOT NULL,
+            assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            UNIQUE KEY unique_student_exam (student_id, exam_id),
+            KEY idx_student_id (student_id),
+            KEY idx_exam_id (exam_id),
+            KEY idx_branch_id (branch_id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=latin1 COLLATE=latin1_swedish_ci
+    `;
+    
+    await connection.query(createSQL);
+    console.log("✓ Student exam assignments table created without foreign keys");
+    console.log("⚠ Note: Referential integrity must be handled in application code");
+    
+} catch (error) {
+    console.log("Error:", error.message);
+}
 
     // Drop old bookshop tables if they exist
     await connection.query("DROP TABLE IF EXISTS student_book_purchases");

@@ -1165,8 +1165,8 @@ router.get(
 
     try {
       let query = `
-            SELECT id, CONCAT(first_name, ' ', last_name) as name, class_id 
-            FROM students 
+            SELECT user_id as id, CONCAT(first_name, ' ', last_name) as name, class_id 
+            FROM new_students 
             WHERE first_name LIKE ? OR last_name LIKE ?
         `;
       const params = [`%${q}%`, `%${q}%`];

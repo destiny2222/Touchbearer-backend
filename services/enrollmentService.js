@@ -40,13 +40,20 @@ async function createNewStudentFromEnrollment(formData) {
         let parentUserId;
 
         if (parent.length > 0) {
+            // ✅ Parent already exists - just use existing parent
             parent_id = parent[0].id;
             parentUserId = parent[0].user_id;
+            console.log('Existing parent found:', parent_id, parentUserId);
         } else {
-            // Email doesn't exist - create new parent
+            // ✅ Parent doesn't exist - create new parent
+            console.log('No existing parent found, creating new parent');
+            
+            // First check if user exists with this email
             const [existingUser] = await connection.query('SELECT id FROM users WHERE email = ?', [formData.parent_email]);
+            console.log('Existing user check for parent email:', existingUser);
             
             if (existingUser.length > 0) {
+                // User exists but doesn't have parent role yet
                 parentUserId = existingUser[0].id;
                 const [parentRole] = await connection.query("SELECT id FROM roles WHERE name = 'Parent'");
                 const [existingRole] = await connection.query('SELECT role_id FROM user_roles WHERE user_id = ?', [parentUserId]);
@@ -55,6 +62,7 @@ async function createNewStudentFromEnrollment(formData) {
                     await connection.query('INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)', [parentUserId, parentRole[0].id]);
                 }
             } else {
+                // Create new user
                 parentUserId = uuidv4();
                 const parentPhone = formData.father_phone || formData.mother_phone || null;
                 const tempParentPassword = parentPhone || generatePassword();
@@ -65,35 +73,42 @@ async function createNewStudentFromEnrollment(formData) {
                 await connection.query('INSERT INTO user_roles (user_id, role_id) VALUES (?, ?)', [parentUserId, parentRole[0].id]);
             }
 
+            // Now create the parent record (only when parent doesn't exist)
             parent_id = uuidv4();
             const parentPhone = formData.father_phone || formData.mother_phone || null;
+            
+            // If phone is null, empty string, or duplicate, skip it
+            const phoneToInsert = parentPhone && parentPhone.trim() !== '' ? parentPhone : null;
+            
             try {
+                // Try with phone first
                 await connection.query('INSERT INTO parents (id, user_id, name, phone, email, dob, residential_address, occupation, workplace_address) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)', [
                     parent_id,
                     parentUserId,
                     formData.father_name || formData.mother_name || 'Parent',
-                    parentPhone,
+                    phoneToInsert,
                     formData.parent_email,
                     formData.father_dob || formData.mother_dob,
-                    formData.parent_residential_address,
-                    formData.father_occupation,
-                    formData.father_workplace_address
+                    formData.parent_residential_address || null,
+                    formData.father_occupation || null,
+                    formData.father_workplace_address || null
                 ]);
-            } catch (phoneError) {
-                if (phoneError.code === 'ER_DUP_ENTRY' && phoneError.message.includes('phone')) {
-                    // Phone already exists for another parent - skip phone but continue
+            } catch (error) {
+                // If phone causes issues (duplicate or null), insert without phone
+                if (error.code === 'ER_DUP_ENTRY' || error.code === 'ER_BAD_NULL_ERROR') {
+                    console.log('Phone insertion failed, inserting without phone');
                     await connection.query('INSERT INTO parents (id, user_id, name, email, dob, residential_address, occupation, workplace_address) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', [
                         parent_id,
                         parentUserId,
                         formData.father_name || formData.mother_name || 'Parent',
                         formData.parent_email,
                         formData.father_dob || formData.mother_dob,
-                        formData.parent_residential_address,
-                        formData.father_occupation,
-                        formData.father_workplace_address
+                        formData.parent_residential_address || null,
+                        formData.father_occupation || null,
+                        formData.father_workplace_address || null
                     ]);
                 } else {
-                    throw phoneError;
+                    throw error;
                 }
             }
         }
@@ -187,5 +202,4 @@ async function createNewStudentFromEnrollment(formData) {
         connection.release();
     }
 }
-
 module.exports = { createNewStudentFromEnrollment };
