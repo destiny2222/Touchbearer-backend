@@ -695,7 +695,8 @@ router.get(
                 b.school_name AS branch_name,
                 b.address AS branch_address,
                 p.name AS parent_name,
-                p.phone AS parent_phone
+                p.phone AS parent_phone,
+                p.email AS parent_email
             FROM new_students ns
             JOIN branches b ON ns.branch_id = b.id
             JOIN parents p ON ns.parent_id = p.id
