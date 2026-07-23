@@ -1248,6 +1248,8 @@ router.get(
       const { roles } = req.user;
       const userId = req.user.id;
 
+      console.log(`[Current Exam] Fetching current exam for user_id: ${userId} with roles: ${roles}`);
+
       console.log(`[Current Exam] Student ID: ${userId}, Roles: ${roles}`);
 
       if (roles.includes("NewStudent")) {
@@ -1298,6 +1300,7 @@ router.get(
       let exams = [];
 
       // First, check for class-based exams (if student has a class)
+      // Exclude exams the student has already submitted so LIMIT 1 picks the next available
       if (studentClassId) {
         const [classBasedExams] = await connection.query(
           `SELECT id, title, duration_minutes, exam_date_time, exam_end_datetime, exam_type
@@ -1305,9 +1308,10 @@ router.get(
            WHERE class_id = ? AND exam_type = ?
              AND NOW() >= exam_date_time - INTERVAL 30 MINUTE
              AND NOW() <= ${endWindow}
+             AND id NOT IN (SELECT exam_id FROM exam_results WHERE student_id = ? AND submitted_at IS NOT NULL)
            ORDER BY exam_date_time ASC
            LIMIT 1`,
-          [studentClassId, examTypeFilter]
+          [studentClassId, examTypeFilter, userId]
         );
         exams = classBasedExams;
       }
@@ -1322,9 +1326,10 @@ router.get(
            WHERE sea.student_id = ?
              AND NOW() >= e.exam_date_time - INTERVAL 30 MINUTE
              AND NOW() <= ${endWindow}
+             AND e.id NOT IN (SELECT exam_id FROM exam_results WHERE student_id = ? AND submitted_at IS NOT NULL)
            ORDER BY e.exam_date_time ASC
            LIMIT 1`,
-          [userId]
+          [userId, userId]
         );
         exams = directExams;
       }
@@ -1339,9 +1344,10 @@ router.get(
              AND e.exam_type = 'External'
              AND NOW() >= e.exam_date_time - INTERVAL 30 MINUTE
              AND NOW() <= ${endWindow}
+             AND e.id NOT IN (SELECT exam_id FROM exam_results WHERE student_id = ? AND submitted_at IS NOT NULL)
            ORDER BY e.exam_date_time ASC
            LIMIT 1`,
-          [branchId]
+          [branchId, userId]
         );
         exams = branchExams;
       }
@@ -1596,26 +1602,30 @@ router.get(
       let studentClassId;
       let examTypeFilter;
       let branchId;
+      let dbStudentId;
       const { roles } = req.user;
+      const userId = req.user.id;
 
       if (roles.includes("NewStudent")) {
         const [newStudent] = await pool.query(
           "SELECT class_id, branch_id FROM new_students WHERE student_id = (SELECT email FROM users WHERE id = ?)",
-          [req.user.id]
+          [userId]
         );
         if (newStudent.length > 0) {
           studentClassId = newStudent[0].class_id;
           branchId = newStudent[0].branch_id;
           examTypeFilter = "External";
+          dbStudentId = userId;
         }
       } else if (roles.includes("Student")) {
         const [existingStudent] = await pool.query(
-          "SELECT class_id FROM students WHERE user_id = ?",
-          [req.user.id]
+          "SELECT id, class_id FROM students WHERE user_id = ?",
+          [userId]
         );
         if (existingStudent.length > 0) {
           studentClassId = existingStudent[0].class_id;
           examTypeFilter = "Internal";
+          dbStudentId = existingStudent[0].id;
         }
       }
 
@@ -1627,17 +1637,25 @@ router.get(
 
       let exam;
       if (studentClassId) {
-        // Admitted students: look up by class
+        // Admitted students: look up by class, skip already-submitted exams
         const [classExam] = await pool.query(
-          "SELECT id, duration_minutes FROM exams WHERE class_id = ? AND exam_type = ? AND exam_date_time > NOW() ORDER BY exam_date_time ASC LIMIT 1",
-          [studentClassId, examTypeFilter]
+          `SELECT id, duration_minutes FROM exams
+           WHERE class_id = ? AND exam_type = ?
+             AND exam_date_time > NOW()
+             AND id NOT IN (SELECT exam_id FROM exam_results WHERE student_id = ? AND submitted_at IS NOT NULL)
+           ORDER BY exam_date_time ASC LIMIT 1`,
+          [studentClassId, examTypeFilter, dbStudentId]
         );
         exam = classExam;
       } else if (branchId && examTypeFilter === "External") {
-        // New students without a class: look up External exams from their branch
+        // New students without a class: look up External exams from their branch, skip already-submitted
         const [branchExam] = await pool.query(
-          "SELECT id, duration_minutes FROM exams WHERE branch_id = ? AND exam_type = 'External' AND exam_date_time > NOW() ORDER BY exam_date_time ASC LIMIT 1",
-          [branchId]
+          `SELECT id, duration_minutes FROM exams
+           WHERE branch_id = ? AND exam_type = 'External'
+             AND exam_date_time > NOW()
+             AND id NOT IN (SELECT exam_id FROM exam_results WHERE student_id = ? AND submitted_at IS NOT NULL)
+           ORDER BY exam_date_time ASC LIMIT 1`,
+          [branchId, dbStudentId]
         );
         exam = branchExam;
       }
@@ -2045,7 +2063,7 @@ router.get(
             FROM exam_results er
             LEFT JOIN students s ON s.id = er.student_id
             LEFT JOIN new_students ns ON ns.user_id = er.student_id
-            WHERE er.exam_id = ?
+            WHERE er.exam_id = ? AND er.submitted_at IS NOT NULL
         `;
 
       const [results] = await pool.query(query, [examId]);
