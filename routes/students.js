@@ -634,20 +634,23 @@ router.get(
   async (req, res) => {
     try {
       let query = `
-            SELECT s.id, u.email as student_id, s.first_name, s.last_name, 
-           s.gender, s.dob, s.address, s.nationality, s.state, s.religion, 
-           s.disability, s.passport, c.name AS class_name, 
-           b.school_name AS branch, b.address AS branch_address,
-           p.name AS parent_name, p.email AS parent_email, p.phone AS parent_phone,
-           s.previous_class, s.last_term_result, s.birth_certificate, s.medical_report
+    SELECT 
+        s.*, 
+        u.email AS student_id,
+        c.name AS class_name,
+        b.school_name AS branch,
+        b.address AS branch_address,
+        p.name AS parent_name,
+        p.email AS parent_email,
+        p.phone AS parent_phone
     FROM students s
-            JOIN users u ON s.user_id = u.id
-            JOIN classes c ON s.class_id = c.id
-            JOIN branches b ON s.branch_id = b.id
-            JOIN parents p ON s.parent_id = p.id
-            LEFT JOIN student_statuses ss ON s.status_id = ss.id
-            WHERE (ss.name IS NULL OR ss.name = 'Active')
-        `;
+    JOIN users u ON s.user_id = u.id
+    JOIN classes c ON s.class_id = c.id
+    JOIN branches b ON s.branch_id = b.id
+    JOIN parents p ON s.parent_id = p.id
+    LEFT JOIN student_statuses ss ON s.status_id = ss.id
+    WHERE (ss.name IS NULL OR ss.name = 'Active')
+`;
       const params = [];
       if (req.user.roles.includes("Admin")) {
         const adminBranchId = await getAdminBranchId(req.user.id);
@@ -680,18 +683,7 @@ router.get(
     try {
       let query = `
             SELECT 
-                ns.id,
-                ns.student_id,
-                ns.first_name,
-                ns.last_name,
-                ns.dob,
-                ns.address,
-                ns.nationality,
-                ns.state,
-                ns.religion,
-                ns.disability,
-                ns.passport,
-                ns.payment_status,
+                ns.*,
                 b.school_name AS branch_name,
                 b.address AS branch_address,
                 p.name AS parent_name,
@@ -745,7 +737,7 @@ router.post(
     const { class_id } = req.body;
 
     if (!class_id) {
-        return res.status(400).json({ success: false, message: "class_id is required to migrate a student." });
+      return res.status(400).json({ success: false, message: "class_id is required to migrate a student." });
     }
 
     const connection = await pool.getConnection();
@@ -776,16 +768,16 @@ router.post(
       }
 
       const [classRows] = await connection.query(
-          "SELECT id, branch_id FROM classes WHERE id = ?",
-          [class_id]
+        "SELECT id, branch_id FROM classes WHERE id = ?",
+        [class_id]
       );
       if (classRows.length === 0) {
-          await connection.rollback();
-          return res.status(404).json({ success: false, message: "Class not found." });
+        await connection.rollback();
+        return res.status(404).json({ success: false, message: "Class not found." });
       }
       if (classRows[0].branch_id !== ns.branch_id) {
-          await connection.rollback();
-          return res.status(400).json({ success: false, message: "Class does not belong to the student's branch." });
+        await connection.rollback();
+        return res.status(400).json({ success: false, message: "Class does not belong to the student's branch." });
       }
 
       const generatedStudentId = await generateStudentId(ns.branch_id);
@@ -847,28 +839,67 @@ router.post(
       const branchName = branchRows[0]?.site_name;
       const className = migratingClassRows[0]?.name;
 
-      // Create student row
+      // Create student row with all fields from new_students
       const studentData = {
         id: uuidv4(),
         user_id: userId,
         parent_id: ns.parent_id,
         first_name: ns.first_name,
         last_name: ns.last_name,
+        surname_name: ns.surname_name,
+        other_names: ns.other_names,
+        gender: ns.gender,
         dob: ns.dob,
+        place_of_birth: ns.place_of_birth,
         passport: ns.passport,
         address: ns.address,
         nationality: ns.nationality,
         state: ns.state,
+        lga: ns.lga,
+        tribe: ns.tribe,
         class_id: class_id,
         branch_id: ns.branch_id,
         religion: ns.religion,
         disability: ns.disability,
+        blood_group: ns.blood_group,
+        genotype: ns.genotype,
+        allergies: ns.allergies,
         previous_school: ns.previous_school,
         previous_class: ns.previous_class,
         last_term_result: ns.last_term_result,
         birth_certificate: ns.birth_certificate,
         medical_report: ns.medical_report,
-        gender: ns.gender,
+        // Family details
+        father_name: ns.father_name,
+        father_phone: ns.father_phone,
+        father_dob: ns.father_dob,
+        father_occupation: ns.father_occupation,
+        father_workplace_address: ns.father_workplace_address,
+        mother_name: ns.mother_name,
+        mother_phone: ns.mother_phone,
+        mother_dob: ns.mother_dob,
+        mother_occupation: ns.mother_occupation,
+        mother_workplace_address: ns.mother_workplace_address,
+        // Guardian details
+        guardian_name: ns.guardian_name,
+        guardian_residential_address: ns.guardian_residential_address,
+        guardian_phone: ns.guardian_phone,
+        guardian_dob: ns.guardian_dob,
+        guardian_occupation: ns.guardian_occupation,
+        guardian_workplace_address: ns.guardian_workplace_address,
+        guardian_email: ns.guardian_email,
+        // Emergency contact
+        emergency_contact_name: ns.emergency_contact_name,
+        emergency_contact_address: ns.emergency_contact_address,
+        emergency_contact_relationship: ns.emergency_contact_relationship,
+        emergency_contact_phone: ns.emergency_contact_phone,
+        // Additional
+        expelled_or_suspended: ns.expelled_or_suspended,
+        offence_details: ns.offence_details,
+        applicant_type: ns.applicant_type,
+        parent_residential_address: ns.parent_residential_address,
+        score: ns.score || 0,
+        payment_status: ns.payment_status,
       };
       await connection.query("INSERT INTO students SET ?", studentData);
 

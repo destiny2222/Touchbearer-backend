@@ -300,6 +300,46 @@ async function initializeDatabase() {
             )
         `;
 
+    // In initializeDatabase() function
+const addStudentColumns = `
+  ALTER TABLE students 
+  ADD COLUMN IF NOT EXISTS surname_name VARCHAR(255) AFTER last_name,
+  ADD COLUMN IF NOT EXISTS other_names VARCHAR(255) AFTER surname_name,
+  ADD COLUMN IF NOT EXISTS place_of_birth VARCHAR(255) AFTER dob,
+  ADD COLUMN IF NOT EXISTS tribe VARCHAR(255) AFTER lga,
+  ADD COLUMN IF NOT EXISTS lga VARCHAR(255) AFTER tribe,
+  ADD COLUMN IF NOT EXISTS blood_group VARCHAR(5) AFTER religion,
+  ADD COLUMN IF NOT EXISTS genotype VARCHAR(5) AFTER blood_group,
+  ADD COLUMN IF NOT EXISTS allergies VARCHAR(255) AFTER genotype,
+  ADD COLUMN IF NOT EXISTS expelled_or_suspended VARCHAR(10) DEFAULT 'no',
+  ADD COLUMN IF NOT EXISTS offence_details TEXT,
+  ADD COLUMN IF NOT EXISTS applicant_type VARCHAR(50) DEFAULT 'parent',
+  ADD COLUMN IF NOT EXISTS parent_residential_address TEXT,
+  ADD COLUMN IF NOT EXISTS father_name VARCHAR(255),
+  ADD COLUMN IF NOT EXISTS father_phone VARCHAR(20),
+  ADD COLUMN IF NOT EXISTS father_dob DATE,
+  ADD COLUMN IF NOT EXISTS father_occupation VARCHAR(255),
+  ADD COLUMN IF NOT EXISTS father_workplace_address TEXT,
+  ADD COLUMN IF NOT EXISTS mother_name VARCHAR(255),
+  ADD COLUMN IF NOT EXISTS mother_phone VARCHAR(20),
+  ADD COLUMN IF NOT EXISTS mother_dob DATE,
+  ADD COLUMN IF NOT EXISTS mother_occupation VARCHAR(255),
+  ADD COLUMN IF NOT EXISTS mother_workplace_address TEXT,
+  ADD COLUMN IF NOT EXISTS guardian_name VARCHAR(255),
+  ADD COLUMN IF NOT EXISTS guardian_residential_address TEXT,
+  ADD COLUMN IF NOT EXISTS guardian_phone VARCHAR(20),
+  ADD COLUMN IF NOT EXISTS guardian_dob DATE,
+  ADD COLUMN IF NOT EXISTS guardian_occupation VARCHAR(255),
+  ADD COLUMN IF NOT EXISTS guardian_workplace_address TEXT,
+  ADD COLUMN IF NOT EXISTS guardian_email VARCHAR(255),
+  ADD COLUMN IF NOT EXISTS emergency_contact_name VARCHAR(255),
+  ADD COLUMN IF NOT EXISTS emergency_contact_address TEXT,
+  ADD COLUMN IF NOT EXISTS emergency_contact_relationship VARCHAR(100),
+  ADD COLUMN IF NOT EXISTS emergency_contact_phone VARCHAR(20),
+  ADD COLUMN IF NOT EXISTS score INT DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS payment_status VARCHAR(255)
+`;
+
     const createEventsTable = `
             CREATE TABLE IF NOT EXISTS events (
                 id VARCHAR(36) PRIMARY KEY,
@@ -1884,6 +1924,13 @@ try {
       }
     } catch (error) {
       console.log("Error updating student_results table:", error.message);
+    }
+
+    try{
+      await connection.query(addStudentColumns);
+      console.log("Added new columns to students table");  
+    } catch (err) {
+      console.error("Error adding columns to students table:", err.message);
     }
 
     const roles = [
