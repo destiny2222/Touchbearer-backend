@@ -226,13 +226,13 @@ router.post('/login/cbt/student', async (req, res) => {
     try {
         const [users] = await pool.query('SELECT * FROM users WHERE email = ?', [student_id]);
         if (users.length === 0) {
-            return res.status(400).json({ success: false, message: 'Invalid credentials.' });
+            return res.status(400).json({ success: false, message: 'User Account Not found.' });
         }
 
         const user = users[0];
         const isMatch = await bcrypt.compare(password, user.password);
         if (!isMatch) {
-            return res.status(400).json({ success: false, message: 'Invalid credentials.' });
+            return res.status(400).json({ success: false, message: 'Wrong Password.' });
         }
 
         const [userRoles] = await pool.query(
@@ -240,6 +240,8 @@ router.post('/login/cbt/student', async (req, res) => {
             [user.id]
         );
         const roles = userRoles.map(r => r.name);
+
+        console.log('User Roles:', roles);
 
         if (!roles.includes('NewStudent') && !roles.includes('Student')) {
             return res.status(403).json({ success: false, message: 'Invalid credentials' });
@@ -255,7 +257,7 @@ router.post('/login/cbt/student', async (req, res) => {
                     b.school_name as branch_name
                  FROM new_students ns
                  JOIN branches b ON ns.branch_id = b.id
-                 JOIN classes c ON ns.class_id = c.id
+                 LEFT JOIN classes c ON ns.class_id = c.id
                  WHERE ns.student_id = ?`,
                 [student_id]
             );
@@ -274,6 +276,8 @@ router.post('/login/cbt/student', async (req, res) => {
             );
             message = 'Login successful. Welcome to your exam.';
         }
+
+        console.log('Student Details Result:', studentDetailsResult[0]);
 
         if (!studentDetailsResult || studentDetailsResult.length === 0) {
             return res.status(404).json({ success: false, message: 'Invalid credentials' });

@@ -1129,6 +1129,39 @@ router.get(
         allExams = allExams.concat(classExams);
       }
 
+      // For new students without a class_id, show all External exams from their branch
+      if (!studentClassId && examTypeFilter === "External" && branchId && studentIdParam) {
+        const branchExternalQuery = `
+          SELECT
+            e.id,
+            e.title,
+            e.duration_minutes,
+            DATE_FORMAT(e.exam_date_time, '%Y-%m-%d %H:%i:%s') AS date,
+            DATE_FORMAT(e.exam_end_datetime, '%Y-%m-%d %H:%i:%s') AS exam_end_datetime,
+            c.name AS class,
+            b.school_name AS branch,
+            'branch-external' AS assignment_type,
+            (
+              SELECT GROUP_CONCAT(DISTINCT cs.name SEPARATOR ', ')
+              FROM questions q
+              JOIN class_subjects cs ON q.class_subject_id = cs.id
+              WHERE q.exam_id = e.id
+            ) AS subjects
+          FROM exams e
+          JOIN classes c ON e.class_id = c.id
+          JOIN branches b ON e.branch_id = b.id
+          LEFT JOIN exam_results er
+            ON e.id = er.exam_id
+            AND er.student_id = ?
+            AND er.submitted_at IS NOT NULL
+          WHERE e.branch_id = ?
+            AND e.exam_type = 'External'
+            AND er.id IS NULL
+        `;
+        const [branchExams] = await connection.query(branchExternalQuery, [studentIdParam, branchId]);
+        allExams = allExams.concat(branchExams);
+      }
+
       // Get directly assigned exams (for all students, especially those without a class)
       // Note: student_exam_assignments.student_id stores user_id (auth user ID), not internal student profile ID
       if (userId && branchId) {
@@ -1211,7 +1244,7 @@ router.get(
   async (req, res) => {
     const connection = await pool.getConnection();
     try {
-      let studentClassId, examTypeFilter, dbStudentId;
+      let studentClassId, examTypeFilter, dbStudentId, branchId;
       const { roles } = req.user;
       const userId = req.user.id;
 
@@ -1220,15 +1253,16 @@ router.get(
       if (roles.includes("NewStudent")) {
         console.log(`[Current Exam] Checking NewStudent with user_id: ${userId}`);
         const [newStudent] = await connection.query(
-          "SELECT class_id FROM new_students WHERE student_id = (SELECT email FROM users WHERE id = ?)",
+          "SELECT class_id, branch_id FROM new_students WHERE student_id = (SELECT email FROM users WHERE id = ?)",
           [userId]
         );
         console.log(`[Current Exam] NewStudent query result:`, newStudent);
         if (newStudent.length) {
           studentClassId = newStudent[0].class_id;
+          branchId = newStudent[0].branch_id;
           examTypeFilter = "External";
           dbStudentId = userId;
-          console.log(`[Current Exam] NewStudent found - class_id: ${studentClassId}, dbStudentId: ${dbStudentId}`);
+          console.log(`[Current Exam] NewStudent found - class_id: ${studentClassId}, branch_id: ${branchId}, dbStudentId: ${dbStudentId}`);
         } else {
           console.log(`[Current Exam] No NewStudent record found for user_id: ${userId}`);
         }
@@ -1293,6 +1327,23 @@ router.get(
           [userId]
         );
         exams = directExams;
+      }
+
+      // For new students without a class_id, check branch-wide External exams
+      if (exams.length === 0 && !studentClassId && branchId && examTypeFilter === "External") {
+        console.log(`[Current Exam] No direct assignments found, checking branch-wide External exams for branch_id: ${branchId}`);
+        const [branchExams] = await connection.query(
+          `SELECT e.id, e.title, e.duration_minutes, e.exam_date_time, e.exam_end_datetime, e.exam_type
+           FROM exams e
+           WHERE e.branch_id = ?
+             AND e.exam_type = 'External'
+             AND NOW() >= e.exam_date_time - INTERVAL 30 MINUTE
+             AND NOW() <= ${endWindow}
+           ORDER BY e.exam_date_time ASC
+           LIMIT 1`,
+          [branchId]
+        );
+        exams = branchExams;
       }
 
       console.log(`[Current Exam] Exam query result:`, exams);
@@ -1544,15 +1595,17 @@ router.get(
     try {
       let studentClassId;
       let examTypeFilter;
+      let branchId;
       const { roles } = req.user;
 
       if (roles.includes("NewStudent")) {
         const [newStudent] = await pool.query(
-          "SELECT class_id FROM new_students WHERE student_id = (SELECT email FROM users WHERE id = ?)",
+          "SELECT class_id, branch_id FROM new_students WHERE student_id = (SELECT email FROM users WHERE id = ?)",
           [req.user.id]
         );
         if (newStudent.length > 0) {
           studentClassId = newStudent[0].class_id;
+          branchId = newStudent[0].branch_id;
           examTypeFilter = "External";
         }
       } else if (roles.includes("Student")) {
@@ -1566,16 +1619,28 @@ router.get(
         }
       }
 
-      if (!studentClassId) {
+      if (!studentClassId && !branchId) {
         return res
           .status(404)
           .json({ success: false, message: "Student class not found." });
       }
 
-      const [exam] = await pool.query(
-        "SELECT id, duration_minutes FROM exams WHERE class_id = ? AND exam_type = ? AND exam_date_time > NOW() ORDER BY exam_date_time ASC LIMIT 1",
-        [studentClassId, examTypeFilter]
-      );
+      let exam;
+      if (studentClassId) {
+        // Admitted students: look up by class
+        const [classExam] = await pool.query(
+          "SELECT id, duration_minutes FROM exams WHERE class_id = ? AND exam_type = ? AND exam_date_time > NOW() ORDER BY exam_date_time ASC LIMIT 1",
+          [studentClassId, examTypeFilter]
+        );
+        exam = classExam;
+      } else if (branchId && examTypeFilter === "External") {
+        // New students without a class: look up External exams from their branch
+        const [branchExam] = await pool.query(
+          "SELECT id, duration_minutes FROM exams WHERE branch_id = ? AND exam_type = 'External' AND exam_date_time > NOW() ORDER BY exam_date_time ASC LIMIT 1",
+          [branchId]
+        );
+        exam = branchExam;
+      }
 
       if (exam.length === 0) {
         return res.status(404).json({
@@ -2515,6 +2580,29 @@ router.put(
       }
 
       const [updateResult] = await connection.query(updateQuery, updateParams);
+
+      // Also publish/unpublish results for new students (not in the students table) on the same exam
+      if (published) {
+        const [nsUpdate] = await connection.query(
+          `UPDATE exam_results er
+           SET er.published = TRUE, er.published_by = ?, er.published_at = NOW()
+           WHERE er.exam_id = ?
+             AND er.student_id NOT IN (SELECT user_id FROM students)
+             AND er.published = FALSE`,
+          [req.user.id, exam_id]
+        );
+        updateResult.affectedRows += nsUpdate.affectedRows;
+      } else {
+        const [nsUpdate] = await connection.query(
+          `UPDATE exam_results er
+           SET er.published = FALSE, er.published_by = NULL, er.published_at = NULL
+           WHERE er.exam_id = ?
+             AND er.student_id NOT IN (SELECT user_id FROM students)
+             AND er.published = TRUE`,
+          [exam_id]
+        );
+        updateResult.affectedRows += nsUpdate.affectedRows;
+      }
 
       await connection.commit();
 
