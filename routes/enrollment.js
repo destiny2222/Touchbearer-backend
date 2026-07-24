@@ -55,7 +55,7 @@ router.post('/register', async (req, res) => {
         first_name, last_name, dob, passport, address, nationality,
         state, branch_id, previous_school, religion,
         disability, parent_name, parent_phone, parent_email, payment_status,
-        program_type
+        program_type, enrollment_amount_paid
     } = req.body;
 
     if (!first_name || !last_name || !dob || !parent_name || !parent_phone || !parent_email || !branch_id) {
@@ -133,7 +133,8 @@ router.post('/register', async (req, res) => {
             disability: disability || null,
             score: 0,
             payment_status,
-            program_type: program_type || null
+            program_type: program_type || null,
+            enrollment_amount_paid: enrollment_amount_paid || null
         };
 
         await connection.query('INSERT INTO new_students SET ?', newStudentData);

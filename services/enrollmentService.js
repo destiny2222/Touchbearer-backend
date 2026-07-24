@@ -180,6 +180,8 @@ async function createNewStudentFromEnrollment(formData) {
             emergency_contact_phone: formData.emergency_contact_phone || null,
             user_id: studentUserId,
             payment_status: 'paid',
+            program_type: formData.program_type || null,
+            enrollment_amount_paid: formData.enrollment_amount_paid || null,
         };
         await connection.query('INSERT INTO new_students SET ?', newStudentData);
 

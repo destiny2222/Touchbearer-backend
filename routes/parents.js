@@ -668,6 +668,216 @@ router.get(
   }
 );
 
+
+// @route   GET /api/parents/admission-progress
+// @desc    Get admission progress for all children (new_students) under this parent
+// @access  Parent
+router.get("/admission-progress", [auth, authorize(["Parent"])], async (req, res) => {
+  try {
+    const [parentRows] = await pool.query(
+      "SELECT id FROM parents WHERE user_id = ?",
+      [req.user.id]
+    );
+    if (parentRows.length === 0) {
+      return res.status(404).json({ success: false, message: "Parent not found." });
+    }
+    const parentId = parentRows[0].id;
+
+    // Get all new_students for this parent
+    const [newStudents] = await pool.query(
+      `SELECT ns.id, ns.student_id, ns.first_name, ns.last_name, ns.dob, ns.passport,
+              ns.program_type, ns.enrollment_amount_paid, ns.acceptance_fee_paid, ns.score,
+              ns.branch_id, ns.class_id, ns.payment_status,
+              b.school_name as branch_name
+       FROM new_students ns
+       JOIN branches b ON ns.branch_id = b.id
+       WHERE ns.parent_id = ?`,
+      [parentId]
+    );
+
+    // Get all fully admitted students (in students table) for this parent
+    const [admittedStudents] = await pool.query(
+      `SELECT s.id, s.first_name, s.last_name, s.class_id, c.name as class_name,
+              s.branch_id, b.school_name as branch_name
+       FROM students s
+       JOIN classes c ON s.class_id = c.id
+       JOIN branches b ON s.branch_id = b.id
+       WHERE s.parent_id = ?`,
+      [parentId]
+    );
+
+    // Build admission progress for each child
+    const children = [];
+
+    for (const ns of newStudents) {
+      // Determine admission step
+      let step = 1;
+      let step_description = "Awaiting Entrance Exam";
+      let acceptance_fee_amount = null;
+
+      // Check if they have exam results (entrance exam passed)
+      const [examResults] = await pool.query(
+        `SELECT er.id, er.score FROM exam_results er
+         JOIN exams e ON er.exam_id = e.id
+         WHERE er.student_id = (SELECT id FROM users WHERE email = ?) AND e.exam_type = 'External'`,
+        [ns.student_id]
+      );
+
+      console.log('exam results for child', examResults[0])
+
+      const hasExamResult = examResults.length > 0;
+      const examPassed = hasExamResult && examResults.some(r => parseFloat(r.score) >= 50);
+
+      if (hasExamResult && examPassed) {
+        step = 2;
+        step_description = "Entrance Exam Passed - Proceed to pay Acceptance Fee";
+
+        // Look up the acceptance fee for this branch + program_type
+        const [feeRows] = await pool.query(
+          `SELECT amount FROM acceptance_fees WHERE branch_id = ? AND (program_type = ? OR (program_type IS NULL AND ? IS NULL))`,
+          [ns.branch_id, ns.program_type, ns.program_type]
+        );
+        acceptance_fee_amount = feeRows.length > 0 ? feeRows[0].amount : null;
+
+        if (ns.acceptance_fee_paid) {
+          step = 3;
+          step_description = "Acceptance Fee Paid - Awaiting Admission";
+        }
+      } else if (hasExamResult && !examPassed) {
+        step_description = "Entrance Exam Not Passed - Contact Admin";
+      }
+
+      children.push({
+        child_id: ns.id,
+        student_id: ns.student_id,
+        child_name: `${ns.first_name} ${ns.last_name}`,
+        dob: ns.dob,
+        passport: ns.passport,
+        branch_name: ns.branch_name,
+        program_type: ns.program_type,
+        enrollment_amount_paid: ns.enrollment_amount_paid,
+        acceptance_fee_paid: !!ns.acceptance_fee_paid,
+        acceptance_fee_amount,
+        admission_step: step,
+        admission_step_description: step_description,
+        exam_score: hasExamResult ? examResults[0].score : null,
+        enrollment_status: "new_student"
+      });
+    }
+
+    for (const s of admittedStudents) {
+      children.push({
+        child_id: s.id,
+        student_id: null,
+        child_name: `${s.first_name} ${s.last_name}`,
+        branch_name: s.branch_name,
+        class_name: s.class_name,
+        admission_step: 4,
+        admission_step_description: "Admission Complete",
+        enrollment_status: "admitted"
+      });
+    }
+
+    res.json({ success: true, data: children });
+  } catch (error) {
+    console.error("Error fetching admission progress:", error);
+    res.status(500).json({ success: false, message: "Server error while fetching admission progress." });
+  }
+});
+
+// @route   GET /api/parents/payment-history
+// @desc    Get all payment history for this parent (enrollment, acceptance, school fees)
+// @access  Parent
+router.get("/payment-history", [auth, authorize(["Parent"])], async (req, res) => {
+  try {
+    const [parentRows] = await pool.query(
+      "SELECT id, email FROM parents WHERE user_id = ?",
+      [req.user.id]
+    );
+    if (parentRows.length === 0) {
+      return res.status(404).json({ success: false, message: "Parent not found." });
+    }
+    const parentId = parentRows[0].id;
+    const parentEmail = parentRows[0].email;
+
+    const allPayments = [];
+
+    // 1. Enrollment payments (from revenue table)
+    const [enrollmentPayments] = await pool.query(
+      `SELECT r.id, r.amount, r.reference, r.payment_for, r.status, r.paid_at, r.created_at
+       FROM revenue r
+       WHERE r.parent_id = ? AND r.payment_for = 'enrollment'
+       ORDER BY r.paid_at DESC`,
+      [parentId]
+    );
+    for (const p of enrollmentPayments) {
+      allPayments.push({
+        id: p.id,
+        type: "enrollment",
+        amount: p.amount,
+        reference: p.reference,
+        status: p.status,
+        paid_at: p.paid_at,
+        created_at: p.created_at
+      });
+    }
+
+    // 2. Acceptance fee payments (from revenue table)
+    const [acceptancePayments] = await pool.query(
+      `SELECT r.id, r.amount, r.reference, r.payment_for, r.status, r.paid_at, r.created_at
+       FROM revenue r
+       WHERE r.parent_id = ? AND r.payment_for = 'acceptance'
+       ORDER BY r.paid_at DESC`,
+      [parentId]
+    );
+    for (const p of acceptancePayments) {
+      allPayments.push({
+        id: p.id,
+        type: "acceptance",
+        amount: p.amount,
+        reference: p.reference,
+        status: p.status,
+        paid_at: p.paid_at,
+        created_at: p.created_at
+      });
+    }
+
+    // 3. School fees payments (from payments table joined with revenue)
+    const [schoolFeePayments] = await pool.query(
+      `SELECT p.id, p.amount_paid, p.payment_date, p.reference, p.created_at,
+              s.first_name, s.last_name, t.name as term_name, t.session
+       FROM payments p
+       JOIN students s ON p.student_id = s.id
+       JOIN terms t ON p.term_id = t.id
+       WHERE s.parent_id = ?
+       ORDER BY p.payment_date DESC`,
+      [parentId]
+    );
+    for (const p of schoolFeePayments) {
+      allPayments.push({
+        id: p.id,
+        type: "school_fees",
+        amount: p.amount_paid,
+        reference: p.reference,
+        status: "success",
+        paid_at: p.payment_date,
+        created_at: p.created_at,
+        student_name: `${p.first_name} ${p.last_name}`,
+        term_name: p.term_name,
+        session: p.session
+      });
+    }
+
+    // Sort all payments by date descending
+    allPayments.sort((a, b) => new Date(b.paid_at) - new Date(a.paid_at));
+
+    res.json({ success: true, data: allPayments });
+  } catch (error) {
+    console.error("Error fetching payment history:", error);
+    res.status(500).json({ success: false, message: "Server error while fetching payment history." });
+  }
+});
+
 router.get(
   "/:id",
   [auth, authorize(["SuperAdmin", "Admin"])],
@@ -927,5 +1137,6 @@ router.delete("/:id", [auth, authorize(["SuperAdmin"])], async (req, res) => {
     connection.release();
   }
 });
+
 
 module.exports = router;

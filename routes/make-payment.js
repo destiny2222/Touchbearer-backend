@@ -41,6 +41,7 @@ const SUBACCOUNT_MAP = {
   enrollment: process.env.PAYSTACK_SUBACCOUNT_ENROLLMENT,
   school_fees: process.env.PAYSTACK_SUBACCOUNT_SCHOOL_FEES,
   book_purchase: process.env.PAYSTACK_SUBACCOUNT_BOOK_PURCHASE,
+  acceptance: process.env.PAYSTACK_SUBACCOUNT_ACCEPTANCE || process.env.PAYSTACK_SUBACCOUNT_ENROLLMENT,
 };
 
 const FALLBACK_SUBACCOUNT = process.env.PAYSTACK_SUBACCOUNT;
@@ -281,6 +282,40 @@ router.post('/verify', async (req, res) => {
       }).catch(err => {
         console.error('Failed to send admin school fees notification:', err);
       });
+
+    } else if (metadata.payment_for === 'acceptance') {
+      const { new_student_id, parent_id } = metadata;
+      if (!new_student_id || !parent_id) throw new Error('Missing new_student_id or parent_id in acceptance payment metadata');
+
+      // Mark the new student as having paid acceptance fee
+      await pool.query(
+        "UPDATE new_students SET acceptance_fee_paid = 1 WHERE id = ?",
+        [new_student_id]
+      );
+
+      // Send acceptance fee payment notification to parent
+      const [[nsInfo]] = await pool.query(
+        `SELECT CONCAT(ns.first_name, ' ', ns.last_name) as student_name, p.email as parent_email, p.name as parent_name, b.school_name as branch_name
+         FROM new_students ns
+         JOIN parents p ON ns.parent_id = p.id
+         JOIN branches b ON ns.branch_id = b.id
+         WHERE ns.id = ?`,
+        [new_student_id]
+      );
+      if (nsInfo?.parent_email) {
+        NotificationService.notifyPaymentReceived({
+          parentEmail: nsInfo.parent_email,
+          parentName: nsInfo.parent_name || 'Parent',
+          amount: amountInNaira,
+          reference,
+          paymentFor: 'Acceptance Fee',
+          studentName: nsInfo.student_name
+        }).catch(err => {
+          console.error('Failed to send acceptance fee notification:', err);
+        });
+      }
+
+      actionResult = { message: 'Acceptance fee payment recorded successfully!' };
 
     } else if (metadata.payment_for === 'book_purchase') {
       const { student_id, book_id, parent_id } = metadata;

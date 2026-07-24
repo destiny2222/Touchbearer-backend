@@ -1810,6 +1810,45 @@ try {
       console.log("Error adding unique key to enrollment_fees table:", error.message);
     }
 
+    // --- Acceptance Fees Table ---
+    const createAcceptanceFeesTable = `
+            CREATE TABLE IF NOT EXISTS acceptance_fees (
+                id INT AUTO_INCREMENT PRIMARY KEY,
+                branch_id VARCHAR(36) NOT NULL,
+                program_type VARCHAR(100) NULL,
+                amount DECIMAL(10, 2) NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                UNIQUE KEY unique_acceptance_branch_program (branch_id, program_type)
+            )
+        `;
+
+    try {
+        await connection.query(createAcceptanceFeesTable);
+        console.log("Acceptance fees table created");
+    } catch (error) {
+        console.log("Error creating acceptance_fees table:", error.message);
+    }
+
+    // Add enrollment_amount_paid column to new_students if it doesn't exist
+    try {
+        const [nsCols] = await connection.query(
+            `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'new_students'`,
+            [dbName]
+        );
+        const existingNsCols = nsCols.map(r => r.COLUMN_NAME);
+        if (!existingNsCols.includes('enrollment_amount_paid')) {
+            await connection.query("ALTER TABLE new_students ADD COLUMN enrollment_amount_paid DECIMAL(10, 2) NULL AFTER payment_status");
+            console.log("Added 'enrollment_amount_paid' column to new_students table");
+        }
+        if (!existingNsCols.includes('acceptance_fee_paid')) {
+            await connection.query("ALTER TABLE new_students ADD COLUMN acceptance_fee_paid TINYINT(1) DEFAULT 0 AFTER enrollment_amount_paid");
+            console.log("Added 'acceptance_fee_paid' column to new_students table");
+        }
+    } catch (error) {
+        console.log("Error adding enrollment_amount_paid to new_students:", error.message);
+    }
+
     // Add exam_id to student_results if it doesn't exist
     try {
       const [resultColumns] = await connection.query(
